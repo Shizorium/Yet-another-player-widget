@@ -1,0 +1,8 @@
+yt-dlp.exe 2026.10.26
+Official release: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26
+Download: https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe
+SHA256: f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d
+Source, licenses and third-party notices: https://github.com/yt-dlp/yt-dlp#licensing
+This executable is provided unmodified for source-mode use and rebuilding.
+The standalone Helper.exe already embeds yt-dlp, Node.js, FFmpeg and ffprobe;
+the release ZIP does not need a second copy of bin/yt-dlp.exe.

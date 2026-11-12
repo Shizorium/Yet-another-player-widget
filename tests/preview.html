@@ -1,0 +1,53 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Yet another player widget — проверка интерфейса</title>
+<link rel="stylesheet" href="../styles/player.css"><style>html,body{margin:0;width:100%;height:100%;background:#24292b;color:#e6e8e7;font:14px Segoe UI,sans-serif}body{background:radial-gradient(ellipse at 40% 40%,#3a433c,#20272b)}body>p{position:absolute;bottom:20px;left:25px;color:#89948c}#test-controls{position:absolute;right:20px;top:20px;display:flex;gap:10px}#test-controls button{padding:10px;background:#20262d;color:#ddd;border:1px solid #555;border-radius:7px}.fa-solid{display:inline-block;width:1em;text-align:center;font-style:normal}.fa-solid:before{content:'♪'}.fa-plus:before{content:'+'}.fa-xmark:before{content:'×'}.fa-play:before{content:'▶'}.fa-pause:before{content:'Ⅱ'}.fa-stop:before{content:'■'}.fa-forward-step:before{content:'⏭'}.fa-backward-step:before{content:'⏮'}.fa-expand:before{content:'⛶'}.fa-compress:before{content:'↙'}.fa-sliders:before{content:'☷'}.fa-grip:before{content:'⠿'}.fa-magnifying-glass:before{content:'⌕'}.fa-list:before{content:'☰'}.fa-angle-up:before{content:'⌃'}.fa-angle-down:before{content:'⌄'}.fa-angle-right:before{content:'›'}.fa-grip-vertical:before{content:'⠿'}.fa-volume-xmark:before{content:'×'}.fa-arrow-up-right-from-square:before{content:'↗'}.fa-circle-check:before{content:'✓'}.fa-circle-exclamation:before{content:'!'}.fa-pen:before{content:'✎'}.fa-rotate-right:before{content:'↻'}.fa-volume-high:before{content:'◖'}.fa-volume-low:before{content:'◖'}.fa-download:before{content:'↓'}.fa-headphones:before{content:'♫'}.fa-compact-disc:before{content:'◎'}.fa-table-cells-large:before{content:'▦'}.fa-record-vinyl:before{content:'◎'}.fa-trash:before{content:'⌫'}.fa-file-import:before{content:'⇥'}.fa-file-export:before{content:'⇤'}</style>
+<style>.fa-ban:before{content:'⊘'}.fa-broom:before{content:'⌁'}.fa-layer-group:before{content:'▱'}.fa-arrow-left:before{content:'←'}</style>
+<p>Тестовое окружение · данные не сохраняются в мире Foundry</p><div id="test-controls"><button id="test-library">Библиотека</button><button id="test-player">Режим игрока</button><button id="test-gm">Режим ГМа</button></div>
+<script type="module">
+const params=new URLSearchParams(location.search);
+if(params.has('frame')){document.body.replaceChildren();const frame=document.createElement('iframe');frame.src='preview.html?embedded';frame.style=`width:${Number(params.get('frame'))}px;height:844px;border:0`;document.body.append(frame);}
+else {
+const {ID}=await import('../scripts/model.js');
+const callbacks=new Map();window.Hooks={once:(name,cb)=>callbacks.set(name,cb),on:()=>{}};
+const store={layout:{left:70,top:150,width:350,height:185,scale:1},helper:{url:'http://127.0.0.1:32123',token:''},selection:{},globalPlaylistVolume:0.65};
+const documents=[];let serial=10;
+const collection=items=>({contents:items,filter:cb=>items.filter(cb),find:cb=>items.find(cb),some:cb=>items.some(cb),get:id=>items.find(i=>i.id===id),has:id=>items.some(i=>i.id===id)});
+function playlist(name,tracks){const flags={managed:true,tracks},p={id:`P${serial++}`,name,mode:0,playing:false,sounds:collection([]),getFlag:(_,key)=>flags[key],setFlag:async(_,key,value)=>{flags[key]=structuredClone(value);window.testWidget?.schedule()},async createEmbeddedDocuments(_,entries){for(const item of entries){const sf=item.flags[ID],s={...item,id:item._id,parent:p,playing:false,pausedTime:null,sound:{currentTime:43,duration:sf.duration},getFlag:(_,key)=>sf[key]};p.sounds.contents.push(s)}},async updateEmbeddedDocuments(_,entries){for(const item of entries)Object.assign(p.sounds.get(item._id),item)},async deleteEmbeddedDocuments(_,ids){p.sounds.contents.splice(0,p.sounds.contents.length,...p.sounds.contents.filter(s=>!ids.includes(s.id)))},async update(data){Object.assign(p,{...data,sounds:p.sounds});for(const item of data.sounds??[])Object.assign(p.sounds.get(item._id),item);window.testWidget?.refresh()},async playSound(sound){for(const s of p.sounds.contents){s.playing=s===sound;if(s!==sound)s.pausedTime=null}p.playing=true;window.testWidget?.refresh()},async stopAll(){p.playing=false;for(const s of p.sounds.contents){s.playing=false;s.pausedTime=null}window.testWidget?.refresh()},async playNext(id,{direction}){const i=p.sounds.contents.findIndex(s=>s.id===id);await p.playSound(p.sounds.contents[(i+direction+p.sounds.contents.length)%p.sounds.contents.length])},async delete(){documents.splice(documents.indexOf(p),1);window.testWidget?.refresh()}};documents.push(p);return p}
+globalThis.game={user:{id:'gm',isGM:true},users:{activeGM:{id:'gm'}},world:{id:'preview'},playlists:collection(documents),settings:{get:(_,key)=>store[key],set:async(_,key,value)=>{store[key]=value;return value},register:()=>{}},keybindings:{register:()=>{}},modules:new Map([[ID,{}]])};
+globalThis.CONFIG={Playlist:{documentClass:{create:async data=>playlist(data.name,[])}}};globalThis.CONST={PLAYLIST_MODES:{SEQUENTIAL:0,SIMULTANEOUS:2}};globalThis.foundry={utils:{randomID:()=>`T${serial++}`},applications:{apps:{FilePicker:{upload:async()=>({path:'test.mp3'})}}}};
+// Audio hardware is simulated here; production uses Foundry's local Sound object.
+class PreviewSound extends EventTarget { constructor(path){super();this.path=path;this.duration=200;this.playing=false;} async load(){return this;} async play(options){this.currentTime=options.offset;this.playing=true;} async stop(){this.playing=false;} }
+foundry.audio={Sound:PreviewSound};game.audio={music:{}};
+globalThis.ui={notifications:{error:message=>{window.lastError=message;console.error(message)},info:message=>{window.lastInfo=message},warn:message=>{window.lastInfo=message}}};
+const colors=[['#35614d','#1e263c'],['#704b39','#272235'],['#566178','#1e3035'],['#625247','#232f3d'],['#4f4263','#292133'],['#64735d','#213930']];
+function cover(index){const [a,b]=colors[index%colors.length];return 'data:image/svg+xml,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="220"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><path fill="url(#g)" d="M0 0h300v220H0z"/><circle cx="220" cy="62" r="28" fill="#efd6a4" opacity=".5"/><path d="M0 180 80 60l80 100 50-60 90 100v20H0" fill="#152322" opacity=".6"/><path d="m0 190 100-55 75 55 125-40v70H0" fill="#122022" opacity=".8"/></svg>`)}
+const names=['Забытые королевства','Таверна «Старый дуб»','Время сражаться','Дождь над Уотердипом','По ту сторону тумана','Дорога приключений'];
+for(let i=0;i<names.length;i++){const tracks=['The Road to Adventure','Тихий вечер в таверне','Echoes of the Ancient Forest','When the Battle Begins'].map((name,j)=>({id:`T${serial++}`,name,kind:'track',type:'file',status:'ready',path:`music/test${i}-${j}.mp3`,cover:cover(i),duration:186+j*37,progress:100}));playlist(names[i],tracks)}
+documents[0].getFlag(ID,'tracks').push({id:`T${serial++}`,name:'Далёкие берега — полная коллекция',type:'youtube',kind:'playlist',source:'https://www.youtube.com/playlist?list=PLabcdefghijklmnop',status:'queued',progress:0});
+documents[2].getFlag(ID,'tracks').push({id:`T${serial++}`,name:'Epic boss battle music',type:'youtube',kind:'track',source:'https://www.youtube.com/watch?v=abcdefghijk',status:'error',error:'Видео недоступно. Проверьте ссылку или повторите загрузку.',cover:cover(2),progress:0,duration:243});
+await import('../scripts/main.js');await callbacks.get('ready')();window.testWidget=game.modules.get(ID).api.widget;
+if(params.has('mix')){
+  const status=document.createElement('p');status.id='test-audio-status';status.style.bottom='55px';document.body.append(status);
+  setInterval(()=>{const w=window.testWidget,a=w.preview.active;status.textContent=`Общих треков: ${w.library.playlists.flatMap(p=>p.sounds.contents).filter(s=>s.playing).length} · Предпрослушивание: ${a ? `${a.loading?'открывается':Math.round(a.sound.currentTime)} с / ${a.sound.duration} с (только ГМ)` : 'выключено'}`;},100);
+}
+if(params.has('cancel')||params.has('clear')){
+  const pending=(p,name,video,status)=>p.getFlag(ID,'tracks').push({id:`T${serial++}`,name,type:'youtube',kind:'track',source:`https://youtu.be/${video}`,sourceKey:video,status,progress:status==='downloading'?42:0,path:'',cover:'',duration:180});
+  pending(documents[0],'Загрузка — лесной ветер','slowvideo01','downloading');pending(documents[1],'В очереди — тихий дождь','lmnopqrstuv','queued');
+  if(params.has('clear')){
+    pending(documents[0],'Загружено — музыка для привала','YJB1vpXAmxo','ready');Object.assign(documents[0].getFlag(ID,'tracks').at(-1),{path:'music/complete.mp3',progress:100});
+    pending(documents[1],'Отменено — ночные огни','wh4IxnMBCYs','cancelled');
+  }
+  const jobs=documents.flatMap(p=>p.getFlag(ID,'tracks')).filter(t=>t.type==='youtube'&&!['ready','error'].includes(t.status)).map(t=>{t.jobId=`preview-${t.id}`;return {id:t.jobId,key:`track:${t.id}`,status:t.status,progress:t.progress}});
+  store.helper.token='preview';
+  window.testWidget.downloads.request=async(endpoint,body)=>{
+    if(endpoint==='/jobs/cancel'){for(const task of body.tasks){let job=jobs.find(j=>j.key===task.key||j.id===task.jobId);if(!job){job={id:`preview-${task.key}`,key:task.key};jobs.push(job)}job.status='cancelled'}return {cancelled:body.tasks.length}}
+    if(!body)return {jobs};
+    const job=jobs.find(j=>j.key===body.key);if(body.retry&&job.status==='cancelled')job.status='queued';return job;
+  };
+}
+await window.testWidget.library.reconcile();
+const first=documents[0].sounds.contents[0];await window.testWidget.library.play(documents[0].id,first.id);
+window.testWidget.selected=documents[0].id;
+document.querySelector('#test-library').onclick=()=>window.testWidget.openFull();document.querySelector('#test-player').onclick=()=>{game.user.isGM=false;window.testWidget.refresh()};document.querySelector('#test-gm').onclick=()=>{game.user.isGM=true;window.testWidget.refresh()};
+if(params.has('embedded'))window.testWidget.openFull();
+}
+</script></html>

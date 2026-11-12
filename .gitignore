@@ -1,0 +1,12 @@
+helper/.build/
+helper/build-tools/node_modules/
+helper/bin/yt-dlp.exe
+helper/Helper.exe
+helper/Helper.exe.sha256
+dist/
+*.log
+.env
+.env.*
+storage/**
+!storage/**/
+!storage/**/.gitkeep
