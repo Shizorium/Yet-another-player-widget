@@ -550,4 +550,5 @@ await test("HTTP helper requires its key, rejects unknown origins and isolates w
     assert.equal(target.status,"ready");
   } finally { await helper.close(); }
 });
+await (await import("./sync.mjs")).syncTests(test);
 console.log(`\n${passed} tests passed.`);

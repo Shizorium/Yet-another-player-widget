@@ -6,11 +6,13 @@ import path from "node:path";
 import {pathToFileURL} from "node:url";
 import {Library} from "../scripts/library.js";
 import {TrackPreview} from "../scripts/preview.js";
+import {PlaybackSync,stampPlayback} from "../scripts/sync.js";
 import {ID} from "../scripts/model.js";
 
 const appPath=process.argv[2];
 if(!appPath)throw new Error("Укажите папку resources/app Foundry v13.");
 await import(pathToFileURL(path.join(appPath,"common/server.mjs")).href);
+Object.defineProperty(foundry.documents.BasePlaylistSound,"database",{get:()=>({getFlagScopes:()=>[ID,"core","world"]})});
 const values=new Map([["selection",{}]]);
 globalThis.game={release:{version:"13.350"},system:{id:"playback-test",version:"1"},user:{id:"AAAAAAAAAAAAAAAA",isGM:true},playlists:new foundry.utils.Collection(),settings:{get:(_,key)=>values.get(key),set:async(_,key,value)=>{values.set(key,value);return value;}}};
 const source=await fs.readFile(path.join(appPath,"client/documents/playlist.mjs"),"utf8");
@@ -27,7 +29,7 @@ class MemoryPlaylist extends foundry.documents.BasePlaylist {
     const {sounds=[],...parent}=changes;
     const merged=this.sounds.contents.map(s=>({...s.toObject(),...sounds.find(update=>update._id===s.id)}));
     this.updateSource({...parent,sounds:merged});
-    for(const s of this.sounds)s.sound={currentTime:37,duration:198};
+    for(const s of this.sounds) s.sound ||= {currentTime:37,duration:198};
     return this;
   }
 }
@@ -90,3 +92,16 @@ await preview.toggle(a,aid);const audition=preview.active.sound;
 assert.ok(audition.options.offset>=60&&audition.options.offset<=100);assert.deepEqual(values.get("selection"),selectionBefore);assert.equal(library.playing,false);
 audition.dispatchEvent(new Event("end"));await Promise.resolve();assert.equal(preview.active,null);assert.equal(audition.stopped,true);
 console.log("PASS GM audition uses the installed v13 Sound constructor, load, metadata, end events and stop API");
+
+game.users={activeGM:game.user};game.time={serverTime:10000,sync:async()=>{}};
+await library.play(a.id,aid);await library.addLayer(b.id,bid);
+const primary=a.sounds.get(aid),secondary=b.sounds.get(bid);
+assert.equal(primary.getFlag(ID,"clock").offset,0);assert.equal(primary.getFlag(ID,"clock").at,10600);
+const synchronization=new PlaybackSync(library,()=>{},{now:()=>12000});
+await synchronization.sync(primary);await synchronization.sync(secondary);
+assert.ok(Math.abs(primary.sound.options.offset-1.4)<0.001);assert.ok(Math.abs(secondary.sound.options.offset-1.4)<0.001);
+assert.equal(secondary.sound.options.volume,0.27);
+await library.seek(90);await synchronization.sync(primary);assert.ok(Math.abs(primary.sound.options.offset-91.4)<0.001);
+assert.equal(secondary.sound.playing,true);
+await library.stop();synchronization.tick();
+console.log("PASS Shared server-time anchors, seek and two independent local sounds use the installed v13 Sound load/play/stop APIs and document flags");

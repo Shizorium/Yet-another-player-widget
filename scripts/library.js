@@ -1,4 +1,5 @@
 import { ID, ROOT, clone, audioPath, youtubeTrack, importPlan, isDownloadActive, isDownloadFinished, isInDownloadQueue } from "./model.js";
+import { stampPlayback } from "./sync.js";
 
 export class Library {
   constructor() { this.queue = Promise.resolve(); }
@@ -251,6 +252,7 @@ export class Library {
     if (JSON.stringify(selection) !== JSON.stringify(game.settings.get(ID, "selection") ?? {})) await game.settings.set(ID, "selection", selection);
   }
   async _updateSound(sound, changes) {
+    stampPlayback(sound,changes);
     return sound.parent.update({ playing: sound.parent.sounds.some(s => s.id === sound.id ? (changes.playing ?? s.playing) : s.playing), sounds: [{ _id: sound.id, ...changes }] });
   }
   async _syncMixModes() {

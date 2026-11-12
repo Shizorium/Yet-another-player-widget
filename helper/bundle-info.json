@@ -1,6 +1,6 @@
 {
-  "version": "1.6.0",
-  "buildId": "73adcd0771fdedf9ee2d",
+  "version": "1.7.0",
+  "buildId": "946756c5e08d0324cde6",
   "platform": "win32",
   "arch": "x64",
   "files": [
@@ -83,7 +83,7 @@
       "bytes": 17
     }
   ],
-  "executableSha256": "0c5a4815f49714466f7c205713d979be3167695d68b1d2c12c88cdb5f29abbee",
+  "executableSha256": "ac3a26d57e3b2994554261c7f86d4b11dc7d48703c5754644e87717e675e995c",
   "imports": [
     "CRYPT32.dll",
     "WS2_32.dll",

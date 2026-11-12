@@ -4,6 +4,7 @@ import { Downloads } from "./downloads.js";
 import { miniView, fullView, currentPlaylistView, volumeView, icon } from "./view.js";
 import { TrackDrag } from "./drag.js";
 import { TrackPreview } from "./preview.js";
+import { PlaybackSync, installPlaybackSync, stampPlayback } from "./sync.js";
 
 let player;
 function report(error) { console.error(`${ID} |`, error); ui.notifications.error(error.message || String(error)); }
@@ -12,6 +13,7 @@ export class PlayerWidget {
   constructor() {
     this.library = new Library(); this.downloads = new Downloads(this.library, () => this.schedule());
     this.preview = new TrackPreview(() => this.schedule());
+    this.audioSync = new PlaybackSync(this.library, () => this.schedule());
     this.selected = null; this.tab = "library"; this.query = ""; this.full = null; this.dialog = null; this.lastSignature = ""; this.uploadFiles = new Map(); this.uploadControllers = new Map();
     this.trackDrag = new TrackDrag(this); this.miniPlaylistOpen = false;
     this.miniBrowseAll = false; this.miniBrowseId = null; this.miniScrollPositions = new Map();
@@ -42,6 +44,12 @@ export class PlayerWidget {
     });
     this.timer = setInterval(() => this.updateTime(), 250);
     this.downloadTimer = setInterval(() => void this.downloads.tick(), 2500);
+    this.syncTimer = setInterval(() => this.audioSync.tick(), 1000);
+    this.onAudioWake = () => { if(!document.hidden) {void Promise.resolve(game.audio.music?.resume?.()).catch(()=>{});this.audioSync.tick();} };
+    document.addEventListener("visibilitychange",this.onAudioWake);
+    window.addEventListener("online",this.onAudioWake);
+    game.socket?.on("connect",this.onAudioWake);
+    document.addEventListener("pointerdown",()=>this.audioSync.tick(),{once:true});
     this.reconcileTimer = setInterval(() => {
       if (game.user.isGM && game.users.activeGM?.id === game.user.id) void this.library.reconcile().catch(report);
     }, 30000);
@@ -162,7 +170,7 @@ export class PlayerWidget {
       this.miniExtraHeight = extraHeight; this.mini.style.setProperty("--yapw-extra-height",`${extraHeight}px`);
       this.mini.style.height = `${baseHeight + extraHeight}px`;
     }
-    const signature = JSON.stringify([game.user.isGM, sound?.id, sound?.playing, sound?.name, sound?.getFlag(ID,"cover"), sound?.parent.id, this.currentPlaylist?.id, this.miniPlaylistOpen, entries.map(({slot,sound:s})=>[slot,s.parent.id,s.id,s.playing,s.name,s.getFlag(ID,"cover")])]);
+    const signature = JSON.stringify([game.user.isGM, this.audioSync.status, sound?.id, sound?.playing, sound?.name, sound?.getFlag(ID,"cover"), sound?.parent.id, this.currentPlaylist?.id, this.miniPlaylistOpen, entries.map(({slot,sound:s})=>[slot,s.parent.id,s.id,s.playing,s.name,s.getFlag(ID,"cover")])]);
     if (signature !== this.lastSignature) { this.mini.innerHTML = miniView(this.library, this); this.lastSignature = signature; }
     this.mini.hidden = !game.user.isGM && !sharedPlaying;
     if (!game.user.isGM && !sharedPlaying) { this.closeFull(); this.closeVolume(); this.dialog?.close(); }
@@ -185,7 +193,7 @@ export class PlayerWidget {
       for (const scope of root.querySelectorAll("[data-playback-layer]")) {
         const sound = this.library.soundAt(Number(scope.dataset.playbackLayer));
         const duration = sound?.sound?.duration ?? sound?.getFlag(ID,"duration");
-        const current = sound?.playing ? sound.sound?.currentTime ?? sound.pausedTime ?? 0 : sound?.pausedTime ?? 0;
+        const current = sound?.playing ? this.audioSync.position(sound) ?? sound.pausedTime ?? 0 : sound?.pausedTime ?? 0;
         for (const input of scope.querySelectorAll("[data-seek]")) {
           if (!(this.interacting && document.activeElement === input) && this.seekingInput !== input) input.value = clamp(current,0,duration || 1);
           input.max = Number.isFinite(duration) ? duration : 1;
@@ -473,6 +481,7 @@ export class PlayerWidget {
     const row = element.closest("[data-track]"), pid = row?.dataset.playlist || element.closest("[data-playlist]")?.dataset.playlist || this.selected, tid = row?.dataset.track;
     const slot = Number(element.closest("[data-playback-layer]")?.dataset.playbackLayer ?? 0);
     this.closePlaylistMenu();
+    if (action === "sync-audio") { if(this.audioSync.manualBusy)return;await this.audioSync.resync(); ui.notifications.info("Звук синхронизирован на этом компьютере."); return; }
     if (action === "library") { this.openFull(); return; }
     if (action === "close") { this.closeFull(); return; }
     if (action === "settings") return this.settings();
@@ -583,6 +592,7 @@ export class PlayerWidget {
 }
 
 Hooks.once("init", () => {
+  installPlaybackSync(() => player?.audioSync);
   game.settings.register(ID,"layout",{scope:"client",config:false,type:Object,default:{version:3,left:85,top:110,width:460,height:78,scale:1}});
   game.settings.register(ID,"libraryLayout",{scope:"client",config:false,type:Object,default:{width:640,height:420}});
   game.settings.register(ID,"helper",{scope:"client",config:false,type:Object,default:{url:"http://127.0.0.1:32123",token:""}});
@@ -592,7 +602,7 @@ Hooks.once("init", () => {
 });
 Hooks.once("ready", async () => {
   player = new PlayerWidget();
-  game.modules.get(ID).api = { open:()=>player.openFull(), settings:()=>player.settings(), widget:player, importYoutube:()=>player.library.importYoutube() };
+  game.modules.get(ID).api = { open:()=>player.openFull(), settings:()=>player.settings(), sync:()=>player.audioSync.resync(), widget:player, importYoutube:()=>player.library.importYoutube() };
   if (game.user.isGM && game.users.activeGM?.id === game.user.id) {
     await player.perform(async () => {
       for (const p of player.library.playlists) if (player.library.tracks(p).some(t=>t.type==="upload" && ["uploading","queued"].includes(t.status))) {
@@ -602,8 +612,11 @@ Hooks.once("ready", async () => {
     });
   }
 });
+Hooks.on("preUpdatePlaylist",(playlist,changes)=>{for(const change of changes.sounds ?? []) stampPlayback(playlist.sounds.get(change._id),change);});
+Hooks.on("preUpdatePlaylistSound",(sound,changes)=>stampPlayback(sound,changes));
 for (const hook of ["createPlaylist","updatePlaylist","deletePlaylist","createPlaylistSound","updatePlaylistSound","deletePlaylistSound","globalPlaylistVolumeChanged"]) Hooks.on(hook,()=> {
   player?.schedule();
+  player?.audioSync.tick();
   if (player && game.user.isGM && game.users.activeGM?.id === game.user.id) {
     clearTimeout(player.playbackTimer);
     player.playbackTimer = setTimeout(() => void player.library.normalizePlayback().catch(report), 150);

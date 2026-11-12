@@ -1,6 +1,6 @@
 {
   "name": "yet-another-player-widget",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "scripts": { "test": "node tests/run.mjs", "helper": "node helper/server.mjs" },
