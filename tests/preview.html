@@ -20,7 +20,7 @@ globalThis.game={user:{id:'gm',isGM:true},users:{activeGM:{id:'gm'}},world:{id:'
 },keybindings:{register:()=>{}},modules:new Map([[ID,{}]])};
 globalThis.CONFIG={Playlist:{documentClass:{create:async data=>playlist(data.name,[])}}};globalThis.CONST={PLAYLIST_MODES:{SEQUENTIAL:0,SIMULTANEOUS:2}};globalThis.foundry={utils:{randomID:()=>`T${serial++}`},applications:{apps:{FilePicker:{upload:async()=>({path:'test.mp3'})}}}};
 // Audio hardware is simulated here; production uses Foundry's local Sound object.
-class PreviewSound extends EventTarget { constructor(path){super();this.path=path;this.duration=200;this.playing=false;} async load(){return this;} async play(options){this.currentTime=options.offset;this.playing=true;} async stop(){this.playing=false;} }
+class PreviewSound extends EventTarget { constructor(path){super();this.path=path;this.duration=200;this.playing=false;} async load(){return this;} async play(options){this.currentTime=options.offset;this.volume=options.volume;this.playing=true;this.dispatchEvent(new Event('play'));} async stop(){this.playing=false;} }
 foundry.audio={Sound:PreviewSound};game.audio={music:{}};
 globalThis.ui={notifications:{error:message=>{window.lastError=message;console.error(message)},info:message=>{window.lastInfo=message},warn:message=>{window.lastInfo=message}}};
 const colors=[['#35614d','#1e263c'],['#704b39','#272235'],['#566178','#1e3035'],['#625247','#232f3d'],['#4f4263','#292133'],['#64735d','#213930']];
@@ -60,7 +60,12 @@ await native.createEmbeddedDocuments('PlaylistSound',[{_id:'nativeForest',name:'
 const first=documents[0].sounds.contents[0];await window.testWidget.library.play(documents[0].id,first.id);
 window.testWidget.selected=documents[0].id;
 document.querySelector('#test-library').onclick=()=>window.testWidget.openFull();
-for(const [button,id,isGM]of [['test-player','player',false],['test-player-two','player-two',false],['test-gm','gm',true]])document.getElementById(button).onclick=()=>{game.user={id,isGM};window.testWidget.updateMiniAppearance();window.testWidget.refresh();};
+for(const [button,id,isGM]of [['test-player','player',false],['test-player-two','player-two',false],['test-gm','gm',true]])document.getElementById(button).onclick=()=>{game.user={id,isGM};window.testWidget.audioSync.applyVolumes();window.testWidget.updateMiniAppearance();window.testWidget.refresh();};
+if(params.has('volume')){
+  await window.testWidget.library.addLayer(documents[1].id,documents[1].sounds.contents[0].id);
+  const levels=document.createElement('p');levels.id='test-volume-levels';levels.style.bottom='80px';document.body.append(levels);
+  setInterval(()=>{const w=window.testWidget;levels.textContent=`Звук (${game.user.id}): основной ${Math.round((w.library.soundAt(0)?.sound?.volume??0)*100)}%, второй ${Math.round((w.library.soundAt(1)?.sound?.volume??0)*100)}%`;},100);
+}
 if(params.has('embedded'))window.testWidget.openFull();
 }
 </script></html>

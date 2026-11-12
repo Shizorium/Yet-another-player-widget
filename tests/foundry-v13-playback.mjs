@@ -106,8 +106,9 @@ await library.seek(90);await synchronization.sync(primary);assert.ok(Math.abs(pr
 assert.equal(secondary.sound.playing,true);
 game.user.isGM=false;
 await synchronization.setLocalVolume(1,0.25);
-assert.ok(Math.abs(secondary.sound.volume-0.0675)<0.00001);assert.equal(secondary.volume,0.27);
-await synchronization.resync();assert.ok(Math.abs(secondary.sound.options.volume-0.0675)<0.00001);
+assert.equal(secondary.sound.volume,0.25);assert.equal(secondary.volume,0.27);
+secondary.updateSource({volume:0});await synchronization.sync(secondary);assert.equal(secondary.sound.volume,0.25);
+await synchronization.resync();assert.equal(secondary.sound.options.volume,0.25);
 game.user.isGM=true;
 console.log("PASS Player personal volume applies to the installed v13 Sound and survives local resync without changing the shared document volume");
 await library.stop();synchronization.tick();

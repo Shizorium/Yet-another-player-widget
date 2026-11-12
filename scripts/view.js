@@ -59,10 +59,9 @@ export function currentPlaylistView(ui) {
 }
 export function volumeView(library) {
   const volume = game.settings.get("core", "globalPlaylistVolume") ?? 1;
-  const gm = game.user.isGM, attribute = gm ? "layer" : "local-layer";
   return [0,...library.layerEntries.map(entry => entry.slot)].map(slot => {
-    const value = gm ? library.volumeFor(slot) : localLayerVolume(slot);
-    return `<label>${layerName(slot)} <output data-${attribute}-volume-value="${slot}">${Math.round(value*100)}%</output><input data-${attribute}-volume="${slot}" aria-label="${gm ? "Громкость" : "Личная громкость"}: ${layerName(slot)}" type="range" min="0" max="1" step="0.01" value="${value}"></label>`;
+    const value = localLayerVolume(slot);
+    return `<label>${layerName(slot)} <output data-local-layer-volume-value="${slot}">${Math.round(value*100)}%</output><input data-local-layer-volume="${slot}" aria-label="Личная громкость: ${layerName(slot)}" type="range" min="0" max="1" step="0.01" value="${value}"></label>`;
   }).join("") + `<label>Вся музыка <output data-volume-value>${Math.round(volume * 100)}%</output><input type="range" data-volume aria-label="Личная громкость всей музыки" min="0" max="1" step="0.01" value="${volume}"></label>`;
 }
 export function fullView(ui) {

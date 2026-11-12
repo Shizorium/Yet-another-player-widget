@@ -272,7 +272,7 @@ await test("Both player views keep secondary controls below the primary and cons
   const [primary,secondary]=p.sounds.contents;await lib.play(p.id,primary.id);await lib.addLayer(p.id,secondary.id);await lib.setVolume(1,0.34);
   const ui={library:lib,selected:p.id,tab:"library",query:"",downloads:{online:true,message:"Test"},currentPlaylist:p};
   for(const markup of [miniView(lib,ui),fullView(ui)]){
-    assert.ok(markup.indexOf('data-playback-layer="0"')<markup.indexOf('data-playback-layer="1"'));assert.match(markup,/aria-label="Второй слой"/);assert.match(markup,/Пауза второго слоя/);assert.match(markup,/Следующий трек второго слоя/);assert.match(markup,/Остановить второй слой/);assert.doesNotMatch(markup,/data-layer-volume=/);assert.match(volumeView(lib),/data-layer-volume="1"[^>]*value="0.34"/);assert.match(markup,/Позиция: Второй слой/);
+    assert.ok(markup.indexOf('data-playback-layer="0"')<markup.indexOf('data-playback-layer="1"'));assert.match(markup,/aria-label="Второй слой"/);assert.match(markup,/Пауза второго слоя/);assert.match(markup,/Следующий трек второго слоя/);assert.match(markup,/Остановить второй слой/);assert.doesNotMatch(markup,/data-layer-volume=/);assert.match(volumeView(lib),/data-local-layer-volume="1"[^>]*value="0.34"/);assert.match(markup,/Позиция: Второй слой/);
   }
   game.user.isGM=false;const playerView=miniView(lib,ui);assert.doesNotMatch(playerView,/Пауза второго слоя/);assert.match(volumeView(lib),/data-local-layer-volume="1"/);assert.doesNotMatch(playerView,/data-layer-volume="1"/);game.user.isGM=true;await lib.stop();layerVolumes={};
 });

@@ -37,7 +37,7 @@ export async function syncTests(test) {
       const sync=new PlaybackSync(lib(main,layer),()=>{},{now:()=>now});
       loadMode="pending";const task=sync.sync(main);await Promise.resolve();now=16000;pending.shift()();await task;
       assert.equal(main.sound.options.offset,27);
-      loadMode="ok";await sync.sync(layer);assert.equal(layer.sound.options.offset,68);assert.equal(layer.sound.volume,0.12);
+      loadMode="ok";await sync.sync(layer);assert.equal(layer.sound.options.offset,68);assert.equal(layer.sound.volume,1);assert.equal(layer.volume,0.12);
       const untouched=layer.sound,oldMain=main.sound;oldMain.currentTime=20;
       await sync.sync(main);assert.equal(main.sound.options.offset,27);assert.equal(layer.sound,untouched);assert.equal(layer.sound.options.offset,68);
       const plays=main.sound.options;await sync.sync(main);assert.equal(main.sound.options,plays);

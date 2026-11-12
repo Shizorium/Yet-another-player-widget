@@ -154,11 +154,6 @@ export class PlayerWidget {
         const slot = Number(input.closest("[data-playback-layer]")?.dataset.playbackLayer ?? 0);
         void this.perform(async () => { try { await this.library.seek(input.value,slot); } finally { if (this.seekRequest === request) this.seekingInput = null; this.updateTime(); } });
       }
-      if (event.target.matches("[data-layer-volume]")) {
-        const slot = Number(event.target.dataset.layerVolume), value = Number(event.target.value);
-        clearTimeout(this.layerVolumeTimers.get(slot));
-        void this.perform(() => this.library.setVolume(slot,value));
-      }
       if(event.target.matches("[data-local-layer-volume]")) {
         const slot = Number(event.target.dataset.localLayerVolume);
         clearTimeout(this.layerVolumeTimers.get(`local-${slot}`));
@@ -186,13 +181,7 @@ export class PlayerWidget {
         event.target.style.setProperty("--progress",`${value*100}%`);
         clearTimeout(this.layerVolumeTimers.get(`local-${slot}`));
         this.layerVolumeTimers.set(`local-${slot}`,setTimeout(()=>void this.perform(()=>this.audioSync.setLocalVolume(slot,value)),50));
-        return;
       }
-      if (!event.target.matches("[data-layer-volume]")) return;
-      const slot = Number(event.target.dataset.layerVolume), value = clamp(event.target.value,0,1);
-      root.querySelectorAll(`[data-layer-volume-value="${slot}"]`).forEach(el => { el.textContent = `${Math.round(value*100)}%`; });
-      clearTimeout(this.layerVolumeTimers.get(slot));
-      this.layerVolumeTimers.set(slot,setTimeout(() => void this.perform(() => this.library.setVolume(slot,value)),50));
     });
     root.addEventListener("error", event => { if (event.target.tagName === "IMG") event.target.hidden = true; }, true);
   }
@@ -228,12 +217,10 @@ export class PlayerWidget {
       const focused = document.activeElement;
       const search = focused?.matches("[data-search]");
       const selection = search ? focused.selectionStart : null;
-      const focusedVolume = this.full.contains(focused) && focused?.matches("[data-layer-volume]") ? focused.dataset.layerVolume : null;
       const scroll = [...this.full.querySelectorAll(".yapw-scroll")].map(el => el.scrollTop);
       this.full.innerHTML = fullView(this);
       this.full.querySelectorAll(".yapw-scroll").forEach((el,i) => { el.scrollTop = scroll[i] ?? 0; });
       if (search) { const input = this.full.querySelector("[data-search]"); input.focus(); input.setSelectionRange(selection,selection); }
-      if (focusedVolume != null) this.full.querySelector(`[data-layer-volume="${focusedVolume}"]`)?.focus();
     }
     this.updateMarquees(); this.updateTime();
   }
@@ -260,11 +247,6 @@ export class PlayerWidget {
           el.setAttribute("aria-valuetext",`${time(current)} / ${time(duration)}`);el.title=`${time(current)} / ${time(duration)}`;
         });
       }
-      root.querySelectorAll("[data-layer-volume]").forEach(input => {
-        if (document.activeElement !== input) input.value = this.library.volumeFor(Number(input.dataset.layerVolume));
-        input.style.setProperty("--progress",`${Number(input.value)*100}%`);
-        root.querySelectorAll(`[data-layer-volume-value="${input.dataset.layerVolume}"]`).forEach(el => { el.textContent = `${Math.round(Number(input.value)*100)}%`; });
-      });
       root.querySelectorAll("[data-local-layer-volume]").forEach(input=>{
         const slot = Number(input.dataset.localLayerVolume);
         if(document.activeElement !== input) input.value = localLayerVolume(slot);
@@ -273,7 +255,7 @@ export class PlayerWidget {
       });
       root.querySelectorAll("[data-volume]").forEach(input => { if (document.activeElement !== input) input.value = game.settings.get("core","globalPlaylistVolume") ?? 1; input.style.setProperty("--progress",`${Number(input.value)*100}%`); });
       root.querySelectorAll("[data-volume-value]").forEach(el => { el.textContent = `${Math.round(Number(root.querySelector("[data-volume]")?.value ?? 1) * 100)}%`; });
-      root.querySelectorAll("[data-volume-trigger] i").forEach(el => { el.className = `fa-solid fa-${game.settings.get("core","globalPlaylistVolume") === 0 || (game.user.isGM && this.library.volumeFor(0) === 0) ? "volume-xmark" : "volume-low"}`; });
+      root.querySelectorAll("[data-volume-trigger] i").forEach(el => { el.className = `fa-solid fa-${game.settings.get("core","globalPlaylistVolume") === 0 || localLayerVolume(0) === 0 ? "volume-xmark" : "volume-low"}`; });
     }
   }
   get currentPlaylist() {
@@ -724,7 +706,12 @@ Hooks.once("init", () => {
   game.settings.register(ID,"selection",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
   game.settings.register(ID,"layerVolumes",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
   game.settings.register(ID,"layerPlayback",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
-  game.settings.register(ID,"localLayerVolumes",{scope:"client",config:false,type:Object,default:{},onChange:()=>{player?.audioSync.applyVolumes();player?.updateTime();}});
+  let previousLocalVolumes = {};
+  try {
+    const previous = JSON.parse(game.settings.storage?.get("client")?.getItem(`${ID}.localLayerVolumes`) ?? "null");
+    if (previous && typeof previous === "object" && !Array.isArray(previous)) previousLocalVolumes = previous;
+  } catch { /* Invalid legacy preferences fall back to the normal initial levels. */ }
+  game.settings.register(ID,"localLayerVolumes",{scope:"user",config:false,type:Object,default:previousLocalVolumes,onChange:()=>{player?.audioSync.applyVolumes();player?.updateTime();}});
   // Keep the old shared values as initial preferences until each user saves their own.
   const legacyVisibility = key => game.settings.storage?.get("world")?.getSetting(`${ID}.${key}`)?.value;
   const legacyFade = legacyVisibility("fadeMini"), legacyTransparency = legacyVisibility("miniTransparency");

@@ -8,7 +8,9 @@ export function soundDuration(doc) {
 }
 export function localLayerVolume(slot = 0) {
   const value = game.settings.get(ID,"localLayerVolumes")?.[slot];
-  return typeof value === "number" && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : 1;
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0,Math.min(1,value));
+  const previous = game.user.isGM ? game.settings.get(ID,"layerVolumes")?.[slot] : undefined;
+  return Number.isFinite(previous) ? Math.max(0,Math.min(1,previous)) : game.user.isGM ? 0.8 : 1;
 }
 export function stampPlayback(sound, changes, now = serverNow()) {
   if (!sound?.parent?.getFlag(ID,"managed") || changes.playing !== true) return;
@@ -56,7 +58,7 @@ export class PlaybackSync {
   effectiveVolume(doc) {
     if (game.user.isGM && this.previewMuted) return 0;
     const slot = this.library.layerEntries?.find(entry=>entry.sound === doc)?.slot ?? 0;
-    return (Number.isFinite(doc.volume) ? doc.volume : 0.8) * (game.user.isGM ? 1 : localLayerVolume(slot));
+    return localLayerVolume(slot);
   }
   applyVolumes() {
     for(const state of this.states.values()) if(this.live(state) && state.sound?.loaded) this.applyVolume(state);
@@ -64,7 +66,7 @@ export class PlaybackSync {
   applyVolume(state, fade = 0) {
     const volume = this.effectiveVolume(state.doc), audio = state.sound;
     audio.volume = volume;
-    if((!game.user.isGM || this.previewMuted) && audio.playing && typeof audio.fade === "function") void Promise.resolve(audio.fade(volume,{duration:fade,from:fade ? 0 : volume})).catch(()=>{});
+    if(audio.playing && typeof audio.fade === "function") void Promise.resolve(audio.fade(volume,{duration:fade,from:fade ? 0 : volume})).catch(()=>{});
   }
   setPreviewMuted(muted) { this.previewMuted = muted; this.applyVolumes(); }
   end(state) {
@@ -179,7 +181,7 @@ export class PlaybackSync {
         ++state.attempts; state.phase="loading"; state.error=""; this.readiness.report(state.doc,clock,"loading"); this.changed();
         const audio = state.sound = new foundry.audio.Sound(state.path,{context:state.doc.context ?? game.audio.music,forceBuffer:true});
         state.doc.sound = audio;
-        audio.addEventListener("play",()=>{ if(this.live(state)) {void state.doc._onStart?.();if(!game.user.isGM || this.previewMuted)this.applyVolume(state,this.previewMuted ? 0 : state.doc.fadeDuration ?? 0);} });
+        audio.addEventListener("play",()=>{ if(this.live(state)) {void state.doc._onStart?.();this.applyVolume(state,this.previewMuted ? 0 : state.doc.fadeDuration ?? 0);} });
         audio.addEventListener("end",()=>this.end(state));
         audio.addEventListener("stop",()=>{ if(this.live(state)) void state.doc._onStop?.(); });
         const loading = audio.load();
