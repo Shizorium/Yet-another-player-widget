@@ -1,11 +1,12 @@
 // Separate local audio: no Playlist documents or socket messages are changed.
 export class TrackPreview {
-  constructor(changed = () => {}) { this.changed = changed; this.generation = 0; this.active = null; }
+  constructor(changed = () => {}, mute = () => {}) { this.changed = changed; this.mute = mute; this.generation = 0; this.active = null; }
   matches(playlistId, trackId) { return this.active?.playlistId === playlistId && this.active?.trackId === trackId; }
   async stop() {
     ++this.generation;
     const active = this.active; this.active = null; this.changed();
-    if (active) await active.sound.stop({ fade: 0 });
+    try { if (active) await active.sound.stop({ fade: 0 }); }
+    finally { if (!this.active) this.mute(false); }
   }
   async toggle(playlist, trackId) {
     if (!game.user.isGM) throw new Error("Предпрослушивание доступно только ведущему.");
@@ -18,6 +19,7 @@ export class TrackPreview {
     if (!track) throw new Error("Сначала дождитесь загрузки трека.");
     const sound = new foundry.audio.Sound(track.path, { context: game.audio.music });
     const active = this.active = { playlistId: playlist.id, trackId, sound, loading: true };
+    this.mute(true);
     const ended = () => { if (this.active === active) void this.stop().catch(console.error); };
     sound.addEventListener("end", ended, { once: true });
     this.changed();

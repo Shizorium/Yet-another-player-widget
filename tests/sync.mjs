@@ -18,7 +18,7 @@ export async function syncTests(test) {
     const doc={id,parent,path:flags.clock.path,playing:true,pausedTime:null,repeat:false,volume:0.35,getFlag:(_,key)=>flags[key],setFlag:async(_,key,value)=>{++writes;flags[key]=value;},_onStart:()=>{},_onStop:()=>{}};
     parent.sounds.contents.push(doc);return doc;
   };
-  const lib=(...docs)=>({playlists:docs.map(d=>d.parent)});
+  const lib=(...docs)=>({playlists:docs.map(d=>d.parent),playbackOptions:()=>({autoplay:true,repeat:true})});
   try {
     globalThis.foundry={utils:{randomID:()=>`clock-${++serial}`},audio:{Sound:Audio}};
     globalThis.game={time:{get serverTime(){return now;},sync:async()=>{++clockSyncs;}},user:{id:"player",isGM:false},users:{activeGM:{id:"gm"}},audio:{locked:false,music:{resume:async()=>{++resumes;}}},settings:{get:()=>0.7}};
@@ -59,6 +59,23 @@ export async function syncTests(test) {
       slow.playing=false;slowSync.tick();await loading;pending.shift()();await Promise.resolve();await Promise.resolve();
       assert.equal(old.playing,false);old.dispatchEvent(new Event("end"));assert.equal(ends,0);
       loadMode="ok";
+    });
+    await test("Seek positions stay selected through loading and the scheduled start, then follow actual audio independently for each layer",async()=>{
+      now=10000;const main=makeDoc("seek-position",11200,83.4),layer=makeDoc("seek-layer",11200,51.2);
+      const sync=new PlaybackSync(lib(main,layer),()=>{},{now:()=>now});
+      loadMode="pending";const loading=sync.sync(main);await Promise.resolve();
+      try { assert.equal(sync.position(main),83.4); }
+      finally { pending.shift()();await loading;loadMode="ok"; }
+      await sync.sync(layer);
+      // Foundry reports NaN while STARTING, before Sound.startTime exists.
+      main.sound.currentTime=NaN;layer.sound.currentTime=undefined;
+      assert.equal(sync.position(main),83.4);assert.equal(sync.position(layer),51.2);
+      // A stream can still report its initial zero before the common deadline.
+      main.sound.element={currentTime:0};assert.equal(sync.position(main),83.4);delete main.sound.element;
+      now=11300;assert.equal(sync.position(main),83.4);assert.equal(sync.position(layer),51.2);
+      main.sound.currentTime=83.5;layer.sound.currentTime=51.3;
+      assert.equal(sync.position(main),83.5);assert.equal(sync.position(layer),51.3);
+      main.playing=layer.playing=false;sync.tick();
     });
     await test("Hung loads time out, retry at most three times, and player manual sync rebuilds both local layers without world writes",async()=>{
       const a=makeDoc("stuck"),b=makeDoc("second"),sync=new PlaybackSync(lib(a,b),()=>{},{now:()=>now,timeout:15});
@@ -104,7 +121,7 @@ export async function syncTests(test) {
     });
     await test("Players have a local sync button; download title counts ready/total across statuses and ignores search",()=>{
       const tracks=[{id:"one",name:"Done",status:"ready",type:"youtube"},{id:"two",name:"Error",status:"error",type:"youtube"},{id:"three",name:"Cancelled",status:"cancelled",type:"youtube"},{id:"four",name:"Pending",status:"queued",type:"youtube"}];
-      const p={id:"p",name:"Playlist",sounds:{get:()=>null}},library={current:null,playlists:[p],layerEntries:[],tracks:()=>tracks,volumeFor:()=>0.8};
+      const p={id:"p",name:"Playlist",sounds:{get:()=>null}},library={current:null,playlists:[p],layerEntries:[],tracks:()=>tracks,volumeFor:()=>0.8,playbackOptions:()=>({autoplay:true,repeat:true})};
       let ui={library,currentPlaylist:p,downloads:{online:true,message:"ok"},query:"not found",tab:"queue"};
       assert.match(miniView(library,ui),/data-action="sync-audio"/);assert.doesNotMatch(miniView(library,ui),/data-action="stop"/);
       game.user.isGM=true;assert.match(fullView(ui),/Загрузки <b[^>]*>1\/4<\/b>/);

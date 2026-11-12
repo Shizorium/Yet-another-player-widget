@@ -72,11 +72,22 @@ export class Library {
   }
   reconcile() { return this.write(async () => { for (const p of this.playlists) await this._sync(p, this.tracks(p)); }); }
   addYoutube(playlistId, source, name = "") {
+    return this.addYoutubeBatch(playlistId, [source], name).then(tracks => tracks[0]);
+  }
+  addYoutubeBatch(playlistId, sources, name = "") {
     return this.edit(playlistId, tracks => {
-      const track = youtubeTrack(source, name, foundry.utils.randomID());
-      if (tracks.some(t => t.sourceKey === track.sourceKey)) throw new Error("Этот трек или плейлист уже добавлен.");
-      tracks.push(track);
-      return track;
+      const seen = new Set(tracks.map(t => t.sourceKey));
+      const added = [];
+      for (const source of sources) {
+        const track = youtubeTrack(source, name, foundry.utils.randomID());
+        if (seen.has(track.sourceKey)) continue;
+        seen.add(track.sourceKey);
+        if (name) track.customName = true;
+        added.push(track);
+      }
+      if (!added.length) throw new Error("Эти треки или плейлисты уже добавлены.");
+      tracks.push(...added);
+      return added;
     });
   }
   addFile(playlistId, path, name = "", duration = null) {
@@ -209,6 +220,29 @@ export class Library {
       return { playlists: plan.length, tracks: count };
     });
   }
+  get foundryPlaylists() { return game.playlists.filter(p => !p.getFlag(ID, "managed") && p.sounds.contents.some(sound => sound.path)); }
+  importFoundry(ids) {
+    return this.write(async () => {
+      let playlists = 0, count = 0;
+      for (const source of this.foundryPlaylists.filter(p => ids.includes(p.id))) {
+        const existing = this.playlists.find(p => p.getFlag(ID, "foundryImportId") === source.id);
+        const tracks = existing ? this.tracks(existing) : [];
+        const added = [];
+        for (const sound of [...source.sounds.contents].sort((a,b) => (a.sort ?? 0) - (b.sort ?? 0))) {
+          if (!sound.path || tracks.some(t => t.foundrySoundId === sound.id)) continue;
+          const path = audioPath(sound.path);
+          added.push({ id: foundry.utils.randomID(), foundrySoundId: sound.id, kind: "track", type: "file", name: sound.name, path, source: path, status: "ready", duration: sound.sound?.duration ?? null, cover: sound.getFlag(ID,"cover") ?? "", progress: 100 });
+        }
+        if (!added.length) continue;
+        const target = existing ?? await this._create(source.name, { foundryImportId: source.id });
+        tracks.push(...added);
+        await target.setFlag(ID, "tracks", tracks);
+        await this._sync(target, tracks);
+        playlists++; count += added.length;
+      }
+      return { playlists, tracks: count };
+    });
+  }
   _ref(sound) { return sound ? { playlistId: sound.parent.id, trackId: sound.id } : {}; }
   _sound(ref) { return this.playlists.find(p => p.id === ref?.playlistId)?.sounds.get(ref.trackId); }
   _alive(sound) { return sound && (sound.playing || sound.pausedTime != null); }
@@ -218,6 +252,43 @@ export class Library {
   }
   get layers() { return this.layerEntries.map(entry => entry.sound); }
   soundAt(slot = 0) { return slot === 0 ? this.current : this.layerEntries.find(entry => entry.slot === slot)?.sound; }
+  playbackOptions(slot = 0) {
+    const options = game.settings.get(ID, "layerPlayback")?.[slot];
+    return { autoplay: options?.autoplay !== false, repeat: options?.repeat !== false };
+  }
+  togglePlaybackOption(slot, key) {
+    return this.write(async () => {
+      if (!Number.isInteger(slot) || slot < 0 || !["autoplay", "repeat"].includes(key)) throw new Error("Неизвестная настройка слоя.");
+      const options = this.playbackOptions(slot); options[key] = !options[key];
+      await game.settings.set(ID, "layerPlayback", { ...game.settings.get(ID,"layerPlayback"), [slot]: options });
+      const sound = this.soundAt(slot);
+      if (sound && key === "repeat") {
+        const changes = { repeat: options.repeat };
+        // Reset the shared clock to the current loop before disabling repetition.
+        if (sound.playing) Object.assign(changes, { playing: true, pausedTime: Math.max(0, sound.sound?.currentTime ?? 0) });
+        await this._updateSound(sound, changes);
+      }
+    });
+  }
+  onSoundEnd(sound, clockId) {
+    return this.write(async () => {
+      if (game.users.activeGM?.id !== game.user.id || !sound.playing || sound.getFlag(ID,"clock")?.id !== clockId) return;
+      const slot = this.current === sound ? 0 : this.layerEntries.find(entry => entry.sound === sound)?.slot;
+      if (slot == null) return;
+      const options = this.playbackOptions(slot), next = options.autoplay && !options.repeat ? this.nextSound(1, slot) : null;
+      await this._updateSound(sound, { playing: false, pausedTime: null });
+      if (options.repeat) {
+        if (slot) return this._playLayer(slot, sound.parent.id, sound.id);
+        return this._play(sound.parent.id, sound.id);
+      }
+      if (next && next !== sound) {
+        if (slot) return this._playLayer(slot, next.parent.id, next.id);
+        return this._play(next.parent.id, next.id);
+      }
+      await this._saveSelection(this.current, this.layers);
+      await this._syncMixModes();
+    });
+  }
   volumeFor(slot = 0) {
     const value = game.settings.get(ID, "layerVolumes")?.[slot];
     return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.8;
@@ -234,6 +305,7 @@ export class Library {
     });
   }
   get playing() { return this.playlists.some(p => p.sounds.some(s => s.playing)); }
+  get active() { return this.playlists.some(p => p.sounds.some(s => this._alive(s))); }
   get current() {
     const sounds = this.playlists.flatMap(p => p.sounds.contents), selection = game.settings.get(ID, "selection") ?? {};
     const selected = this._sound(selection);
@@ -285,6 +357,9 @@ export class Library {
     await this._stopOtherSounds(primary, layers);
     await this._saveSelection(primary, layers);
     await this._syncMixModes();
+    for (const {slot, sound} of [{slot:0,sound:primary}, ...this.layerEntries]) {
+      if (sound && sound.repeat !== this.playbackOptions(slot).repeat) await this._updateSound(sound, { repeat: this.playbackOptions(slot).repeat });
+    }
   }
   play(playlistId, trackId) {
     return this.write(() => this._play(playlistId, trackId));
@@ -297,7 +372,7 @@ export class Library {
     await this._saveSelection(sound, layers);
     await this._syncMixModes();
     // Updating this sound alone also works when a sibling on another layer is playing.
-    return this._updateSound(sound, { playing: true, volume: this.volumeFor(0) });
+    return this._updateSound(sound, { playing: true, repeat: this.playbackOptions(0).repeat, volume: this.volumeFor(0) });
   }
   addLayer(playlistId, trackId) {
     return this.write(() => this._playLayer(1, playlistId, trackId));
@@ -315,7 +390,7 @@ export class Library {
       await sound.parent.update({ mode: CONST.PLAYLIST_MODES.SIMULTANEOUS });
     }
     await this._stopOtherSounds(primary === sound ? null : primary, layers);
-    await this._updateSound(sound, { playing: true, pausedTime: null, volume: this.volumeFor(slot) });
+    await this._updateSound(sound, { playing: true, pausedTime: null, repeat: this.playbackOptions(slot).repeat, volume: this.volumeFor(slot) });
     await this._saveSelection(primary === sound ? null : primary, [...entries.map(entry => ({ ...this._ref(entry.sound), slot: entry.slot })), { playlistId, trackId, slot }]);
     await this._syncMixModes();
   }
@@ -342,7 +417,7 @@ export class Library {
     });
   }
   stop() { return this.write(async () => { const primary = this.current; await this._stopOtherSounds(); await this._saveSelection(primary); await this._syncMixModes(); }); }
-  step(direction, slot = 0) { return this.write(async () => {
+  nextSound(direction, slot = 0) {
     const sound = this.soundAt(slot);
     if (!sound) return;
     const occupied = [this.current, ...this.layers].filter(s => s && s !== sound);
@@ -353,6 +428,10 @@ export class Library {
       const candidate = sound.parent.sounds.get(order[index]);
       if (candidate && !occupied.includes(candidate)) { next = candidate; break; }
     }
+    return next;
+  }
+  step(direction, slot = 0) { return this.write(async () => {
+    const sound = this.soundAt(slot), next = this.nextSound(direction, slot);
     if (!next || next === sound) return;
     if (slot) return this._playLayer(slot, next.parent.id, next.id);
     return this._play(next.parent.id, next.id);

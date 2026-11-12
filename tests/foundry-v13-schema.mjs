@@ -55,3 +55,13 @@ await assert.rejects(() => library.create("Cancelled"), /не создал пл�
 TestPlaylist.create = originalCreate;
 assert.ok((await library.create("After cancellation")).id);
 console.log("PASS Cancelled creation reports a readable error and does not block the next attempt");
+
+const listener={id:"BBBBBBBBBBBBBBBB",isGM:false,hasRole:()=>false,hasPermission:()=>false};
+const otherListener={...listener,id:"CCCCCCCCCCCCCCCC"};
+const preference=new foundry.documents.BaseSetting({key:`${ID}.miniTransparency`,user:listener.id,value:35});
+assert.equal(preference.user,listener.id);
+assert.equal(preference.canUserModify(listener,"create"),true);
+assert.equal(preference.canUserModify(listener,"update",{value:65}),true);
+assert.equal(preference.canUserModify(otherListener,"update",{value:65}),false);
+assert.equal(preference.canUserModify(listener,"update",{user:otherListener.id}),false);
+console.log("PASS Real Foundry v13 user settings allow players to save their own transparency and reject changes to another player's preference");

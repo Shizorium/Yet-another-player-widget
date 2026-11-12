@@ -82,6 +82,7 @@ console.log("PASS Explicit mixing, native end callbacks, independent stop and mo
 const {default:NativeSound}=await import(pathToFileURL(path.join(appPath,"client/audio/sound.mjs")).href);
 // Native constructor, metadata loading and event API, with audio hardware replaced in memory.
 class MemorySound extends NativeSound {
+  constructor(path,options){super(path,options);this.forceBufferRequested=options?.forceBuffer;}
   async _load(){this.buffer={duration:200};}
   async play(options){this.options=options;this.gainNode={gain:{value:1,cancelScheduledValues(){},setValueAtTime(value){this.value=value;},linearRampToValueAtTime(value){this.value=value;}}};this.volume=options.volume;this._state=NativeSound.STATES.PLAYING;return this;}
   async stop(options){assert.equal(options.fade,0);this.stopped=true;this._state=NativeSound.STATES.STOPPED;return this;}
@@ -111,3 +112,76 @@ game.user.isGM=true;
 console.log("PASS Player personal volume applies to the installed v13 Sound and survives local resync without changing the shared document volume");
 await library.stop();synchronization.tick();
 console.log("PASS Shared server-time anchors, seek and two independent local sounds use the installed v13 Sound load/play/stop APIs and document flags");
+
+await a.setFlag(ID,"tracks",[...library.tracks(a),{id:cid,name:"Layer in same playlist",status:"ready",path:"music/layer.mp3"}]);
+await library.togglePlaybackOption(0,"repeat");await library.togglePlaybackOption(1,"repeat");
+await library.play(a.id,aid);await library.addLayer(b.id,bid);
+await synchronization.sync(a.sounds.get(aid));await synchronization.sync(b.sounds.get(bid));
+const ended=b.sounds.get(bid),oldPrimary=a.sounds.get(aid);
+ended.sound.dispatchEvent(new Event("end"));await library.queue;
+assert.equal(ended.playing,false);assert.equal(oldPrimary.playing,true);
+oldPrimary.sound.dispatchEvent(new Event("end"));await library.queue;
+assert.equal(library.current.id,cid);assert.equal(library.current.playing,true);assert.equal(library.current.repeat,false);
+await synchronization.sync(library.current);
+const mutedPreview=new TrackPreview(()=>{},value=>synchronization.setPreviewMuted(value));
+await mutedPreview.toggle(a,aid);assert.equal(library.current.sound.volume,0);assert.equal(library.current.playing,true);
+await mutedPreview.stop();assert.equal(library.current.sound.volume,library.current.volume);
+await library.stop();synchronization.tick();
+console.log("PASS Natural v13 Sound end events advance only the ending layer, honor preferences and restore GM volume after audition");
+
+const connected=[{...game.user,name:"GM",active:true},{id:"FAST",name:"Fast listener",active:true},{id:"SLOW",name:"Slow listener",active:true}];
+game.users.filter=fn=>connected.filter(fn);
+const userSource=await fs.readFile(path.join(appPath,"client/documents/user.mjs"),"utf8");
+const broadcastMethod=userSource.match(/  broadcastActivity\([^]*?\n  \}/)?.[0];
+assert.ok(broadcastMethod,"Installed Foundry must expose User.broadcastActivity");
+const NativeActivity=new Function(`return class {${broadcastMethod}}`)();
+const socketListeners=new Map(),sentActivity=[];
+game.socket={on:(channel,handler)=>socketListeners.set(channel,handler),emit:(...args)=>sentActivity.push(args)};
+game.user.isSelf=true;game.user.broadcastActivity=NativeActivity.prototype.broadcastActivity;
+for(const playlist of library.playlists)for(const sound of playlist.sounds)sound.setFlag=async(scope,key,value)=>{sound.updateSource({[`flags.${scope}.${key}`]:value});};
+await library.play(a.id,aid);
+const shared=a.sounds.get(aid);shared.setFlag=async(scope,key,value)=>{shared.updateSource({[`flags.${scope}.${key}`]:value});};
+const barrierSync=new PlaybackSync(library,()=>{},{now:()=>20000});
+for(const user of connected.slice(1))socketListeners.get("userActivity")(user.id,{[ID]:{type:"widget-ready",userId:user.id,widgetId:`widget-${user.id}`}});
+await barrierSync.sync(shared);
+const buffered=shared.sound,waiting=shared.getFlag(ID,"clock");
+assert.equal(waiting.waiting,true);assert.equal(buffered.forceBufferRequested,true);assert.equal(buffered.playing,false);assert.equal(barrierSync.position(shared),0);
+assert.ok(sentActivity.some(([channel,userId,data])=>channel==="userActivity"&&userId===game.user.id&&data[ID]?.status==="ready"));
+const acknowledge=(userId,trackId,clockId)=>socketListeners.get("userActivity")(userId,{[ID]:{type:"audio-ready",playlistId:a.id,trackId,clockId,userId,status:"ready"}});
+const ready=userId=>acknowledge(userId,aid,waiting.id);
+ready("FAST");await Promise.resolve();assert.equal(shared.getFlag(ID,"clock").waiting,true);assert.equal(buffered.playing,false);
+ready("SLOW");await Promise.resolve();await library.queue;
+assert.equal(shared.getFlag(ID,"clock").at,21200);assert.equal(shared.getFlag(ID,"clock").waiting,false);
+await barrierSync.sync(shared);
+assert.equal(shared.sound,buffered);assert.equal(buffered.options.offset,0);assert.equal(buffered.options.delay,1.2);
+buffered.dispatchEvent(new Event("end"));await library.queue;
+const automatic=library.current;assert.equal(automatic.id,cid);assert.equal(automatic.getFlag(ID,"clock").waiting,true);
+await barrierSync.sync(automatic);assert.equal(automatic.sound.playing,false);
+const automaticClock=automatic.getFlag(ID,"clock");
+for(const userId of ["FAST","SLOW"])acknowledge(userId,cid,automaticClock.id);
+await Promise.resolve();await library.queue;await barrierSync.sync(automatic);
+assert.equal(automatic.sound.options.offset,0);assert.equal(automatic.sound.options.delay,1.2);
+await library.stop();barrierSync.tick();delete game.socket;
+console.log("PASS Manual starts and autoplay use native v13 User.broadcastActivity, preload Sound, wait for two listeners and reuse the buffer for a shared scheduled start");
+
+let scheduled,beginPlayback;
+const queued=new Promise(resolve=>{scheduled=resolve;});
+class ScheduledMemorySound extends MemorySound {
+  async play(options){
+    this._state=NativeSound.STATES.STARTING;
+    const delay=new Promise(resolve=>{beginPlayback=resolve;});scheduled();await delay;
+    this.startTime=this.context.currentTime-options.offset;this._state=NativeSound.STATES.PLAYING;return this;
+  }
+}
+foundry.audio.Sound=ScheduledMemorySound;
+await library.play(a.id,aid);await library.seek(86.4);
+const seeking=a.sounds.get(aid);let seekTime=game.time.serverTime;
+const seekSync=new PlaybackSync(library,()=>{},{now:()=>seekTime});
+const seekingTask=seekSync.sync(seeking);await queued;
+assert.equal(Number.isNaN(seeking.sound.currentTime),true); // Real v13 getter before startTime is initialized.
+assert.equal(seekSync.position(seeking),86.4);
+seekTime=seeking.getFlag(ID,"clock").at+50;assert.equal(seekSync.position(seeking),86.4);
+beginPlayback();await seekingTask;
+game.audio.music.currentTime+=0.25;assert.equal(seekSync.position(seeking),86.65);
+await library.stop();seekSync.tick();foundry.audio.Sound=MemorySound;
+console.log("PASS Seek position stays selected while the real v13 Sound getter returns NaN during STARTING and follows audio after the deadline");

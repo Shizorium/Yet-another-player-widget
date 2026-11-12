@@ -1,7 +1,7 @@
 <!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Yet another player widget — проверка интерфейса</title>
 <link rel="stylesheet" href="../styles/player.css"><style>html,body{margin:0;width:100%;height:100%;background:#24292b;color:#e6e8e7;font:14px Segoe UI,sans-serif}body{background:radial-gradient(ellipse at 40% 40%,#3a433c,#20272b)}body>p{position:absolute;bottom:20px;left:25px;color:#89948c}#test-controls{position:absolute;right:20px;top:20px;display:flex;gap:10px}#test-controls button{padding:10px;background:#20262d;color:#ddd;border:1px solid #555;border-radius:7px}.fa-solid{display:inline-block;width:1em;text-align:center;font-style:normal}.fa-solid:before{content:'♪'}.fa-plus:before{content:'+'}.fa-xmark:before{content:'×'}.fa-play:before{content:'▶'}.fa-pause:before{content:'Ⅱ'}.fa-stop:before{content:'■'}.fa-forward-step:before{content:'⏭'}.fa-backward-step:before{content:'⏮'}.fa-expand:before{content:'⛶'}.fa-compress:before{content:'↙'}.fa-sliders:before{content:'☷'}.fa-grip:before{content:'⠿'}.fa-magnifying-glass:before{content:'⌕'}.fa-list:before{content:'☰'}.fa-angle-up:before{content:'⌃'}.fa-angle-down:before{content:'⌄'}.fa-angle-right:before{content:'›'}.fa-grip-vertical:before{content:'⠿'}.fa-volume-xmark:before{content:'×'}.fa-arrow-up-right-from-square:before{content:'↗'}.fa-circle-check:before{content:'✓'}.fa-circle-exclamation:before{content:'!'}.fa-pen:before{content:'✎'}.fa-rotate-right:before{content:'↻'}.fa-volume-high:before{content:'◖'}.fa-volume-low:before{content:'◖'}.fa-download:before{content:'↓'}.fa-headphones:before{content:'♫'}.fa-compact-disc:before{content:'◎'}.fa-table-cells-large:before{content:'▦'}.fa-record-vinyl:before{content:'◎'}.fa-trash:before{content:'⌫'}.fa-file-import:before{content:'⇥'}.fa-file-export:before{content:'⇤'}</style>
-<style>.fa-ban:before{content:'⊘'}.fa-broom:before{content:'⌁'}.fa-layer-group:before{content:'▱'}.fa-arrow-left:before{content:'←'}.fa-arrows-rotate:before{content:'↻'}</style>
-<p>Тестовое окружение · данные не сохраняются в мире Foundry</p><div id="test-controls"><button id="test-library">Библиотека</button><button id="test-player">Режим игрока</button><button id="test-gm">Режим ГМа</button></div>
+<style>.fa-list-ol:before{content:"≡"}.fa-repeat:before{content:"↻"}.fa-ban:before{content:'⊘'}.fa-broom:before{content:'⌁'}.fa-layer-group:before{content:'▱'}.fa-arrow-left:before{content:'←'}.fa-arrows-rotate:before{content:'↻'}</style>
+<p>Тестовое окружение · данные не сохраняются в мире Foundry</p><div id="test-controls"><button id="test-library">Библиотека</button><button id="test-player">Режим игрока</button><button id="test-player-two">Второй игрок</button><button id="test-gm">Режим ГМа</button></div>
 <script type="module">
 const params=new URLSearchParams(location.search);
 if(params.has('frame')){document.body.replaceChildren();const frame=document.createElement('iframe');frame.src='preview.html?embedded';frame.style=`width:${Number(params.get('frame'))}px;height:844px;border:0`;document.body.append(frame);}
@@ -9,10 +9,15 @@ else {
 const {ID}=await import('../scripts/model.js');
 const callbacks=new Map();window.Hooks={once:(name,cb)=>callbacks.set(name,cb),on:()=>{}};
 const store={layout:{left:70,top:150,width:350,height:185,scale:1},helper:{url:'http://127.0.0.1:32123',token:''},selection:{},globalPlaylistVolume:0.65};
+const settingConfigs=new Map(),userSettings=new Map();
 const documents=[];let serial=10;
 const collection=items=>({contents:items,filter:cb=>items.filter(cb),find:cb=>items.find(cb),some:cb=>items.some(cb),get:id=>items.find(i=>i.id===id),has:id=>items.some(i=>i.id===id)});
 function playlist(name,tracks){const flags={managed:true,tracks},p={id:`P${serial++}`,name,mode:0,playing:false,sounds:collection([]),getFlag:(_,key)=>flags[key],setFlag:async(_,key,value)=>{flags[key]=structuredClone(value);window.testWidget?.schedule()},async createEmbeddedDocuments(_,entries){for(const item of entries){const sf=item.flags[ID],s={...item,id:item._id,parent:p,playing:false,pausedTime:null,sound:{currentTime:43,duration:sf.duration},getFlag:(_,key)=>sf[key]};p.sounds.contents.push(s)}},async updateEmbeddedDocuments(_,entries){for(const item of entries)Object.assign(p.sounds.get(item._id),item)},async deleteEmbeddedDocuments(_,ids){p.sounds.contents.splice(0,p.sounds.contents.length,...p.sounds.contents.filter(s=>!ids.includes(s.id)))},async update(data){Object.assign(p,{...data,sounds:p.sounds});for(const item of data.sounds??[])Object.assign(p.sounds.get(item._id),item);window.testWidget?.refresh()},async playSound(sound){for(const s of p.sounds.contents){s.playing=s===sound;if(s!==sound)s.pausedTime=null}p.playing=true;window.testWidget?.refresh()},async stopAll(){p.playing=false;for(const s of p.sounds.contents){s.playing=false;s.pausedTime=null}window.testWidget?.refresh()},async playNext(id,{direction}){const i=p.sounds.contents.findIndex(s=>s.id===id);await p.playSound(p.sounds.contents[(i+direction+p.sounds.contents.length)%p.sounds.contents.length])},async delete(){documents.splice(documents.indexOf(p),1);window.testWidget?.refresh()}};documents.push(p);return p}
-globalThis.game={user:{id:'gm',isGM:true},users:{activeGM:{id:'gm'}},world:{id:'preview'},playlists:collection(documents),settings:{get:(_,key)=>store[key],set:async(_,key,value)=>{store[key]=value;return value},register:()=>{}},keybindings:{register:()=>{}},modules:new Map([[ID,{}]])};
+globalThis.game={user:{id:'gm',isGM:true},users:{activeGM:{id:'gm'}},world:{id:'preview'},playlists:collection(documents),settings:{
+  get:(_,key)=>{const config=settingConfigs.get(key);return (config?.scope==='user'?userSettings.get(game.user.id)?.[key]:store[key])??config?.default;},
+  set:async(_,key,value)=>{const config=settingConfigs.get(key);if(config?.scope==='user'){const own=userSettings.get(game.user.id)??{};own[key]=value;userSettings.set(game.user.id,own);}else store[key]=value;config?.onChange?.(value);return value;},
+  register:(_,key,config)=>settingConfigs.set(key,config)
+},keybindings:{register:()=>{}},modules:new Map([[ID,{}]])};
 globalThis.CONFIG={Playlist:{documentClass:{create:async data=>playlist(data.name,[])}}};globalThis.CONST={PLAYLIST_MODES:{SEQUENTIAL:0,SIMULTANEOUS:2}};globalThis.foundry={utils:{randomID:()=>`T${serial++}`},applications:{apps:{FilePicker:{upload:async()=>({path:'test.mp3'})}}}};
 // Audio hardware is simulated here; production uses Foundry's local Sound object.
 class PreviewSound extends EventTarget { constructor(path){super();this.path=path;this.duration=200;this.playing=false;} async load(){return this;} async play(options){this.currentTime=options.offset;this.playing=true;} async stop(){this.playing=false;} }
@@ -29,7 +34,7 @@ PreviewSound.prototype.load=async function(){this.loaded=true;return this;};
 for(const p of documents){const create=p.createEmbeddedDocuments.bind(p);p.createEmbeddedDocuments=async(...args)=>{await create(...args);for(const s of p.sounds.contents)if(!s.setFlag){const extra={};const original=s.getFlag;s.getFlag=(scope,key)=>key in extra?extra[key]:s.flags?.[scope]?.[key]??original(scope,key);s.setFlag=async(scope,key,value)=>{extra[key]=value;};}};}
 const syncNotice=document.createElement('p');syncNotice.id='test-notice';syncNotice.style.bottom='50px';document.body.append(syncNotice);
 for(const kind of ['error','info','warn']){const notify=ui.notifications[kind];ui.notifications[kind]=message=>{syncNotice.textContent=message;notify(message);};}
-await import('../scripts/main.js');await callbacks.get('ready')();window.testWidget=game.modules.get(ID).api.widget;
+await import('../scripts/main.js');callbacks.get('init')();await callbacks.get('ready')();window.testWidget=game.modules.get(ID).api.widget;
 if(params.has('mix')){
   const status=document.createElement('p');status.id='test-audio-status';status.style.bottom='55px';document.body.append(status);
   setInterval(()=>{const w=window.testWidget,a=w.preview.active;status.textContent=`Общих треков: ${w.library.playlists.flatMap(p=>p.sounds.contents).filter(s=>s.playing).length} · Предпрослушивание: ${a ? `${a.loading?'открывается':Math.round(a.sound.currentTime)} с / ${a.sound.duration} с (только ГМ)` : 'выключено'}`;},100);
@@ -50,9 +55,12 @@ if(params.has('cancel')||params.has('clear')){
   };
 }
 await window.testWidget.library.reconcile();
+const native=playlist('Музыка Foundry — пример',[]);await native.setFlag(ID,'managed',false);
+await native.createEmbeddedDocuments('PlaylistSound',[{_id:'nativeForest',name:'Лесной ветер',path:'music/native-forest.ogg',sort:1000,flags:{[ID]:{duration:180}}},{_id:'nativeRain',name:'Тихий дождь',path:'music/native-rain.ogg',sort:2000,flags:{[ID]:{duration:240}}}]);
 const first=documents[0].sounds.contents[0];await window.testWidget.library.play(documents[0].id,first.id);
 window.testWidget.selected=documents[0].id;
-document.querySelector('#test-library').onclick=()=>window.testWidget.openFull();document.querySelector('#test-player').onclick=()=>{game.user.isGM=false;window.testWidget.refresh()};document.querySelector('#test-gm').onclick=()=>{game.user.isGM=true;window.testWidget.refresh()};
+document.querySelector('#test-library').onclick=()=>window.testWidget.openFull();
+for(const [button,id,isGM]of [['test-player','player',false],['test-player-two','player-two',false],['test-gm','gm',true]])document.getElementById(button).onclick=()=>{game.user={id,isGM};window.testWidget.updateMiniAppearance();window.testWidget.refresh();};
 if(params.has('embedded'))window.testWidget.openFull();
 }
 </script></html>

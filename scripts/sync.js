@@ -1,4 +1,5 @@
 import { ID } from "./model.js";
+import { PlaybackReadiness, READINESS_CHANNEL, READY_START_DELAY_MS } from "./readiness.js";
 
 export const START_DELAY_MS = 600;
 export function serverNow() { const now = game.time?.serverTime; return Number.isFinite(now) ? now : Date.now(); }
@@ -14,7 +15,7 @@ export function stampPlayback(sound, changes, now = serverNow()) {
   if (changes.flags?.[ID]?.clock) return;
   if (sound.playing && !("pausedTime" in changes) && !("path" in changes)) return;
   changes.flags = { ...changes.flags, [ID]: { ...changes.flags?.[ID], clock: {
-    id: foundry.utils.randomID(), at: now + START_DELAY_MS,
+    id: foundry.utils.randomID(), at: now + START_DELAY_MS, ...(game.socket ? { waiting:true } : {}),
     offset: Math.max(0, Number(changes.pausedTime ?? sound.pausedTime) || 0), path: changes.path ?? sound.path
   } } };
 }
@@ -35,14 +36,25 @@ function bounded(promise, ms, signal) {
   });
 }
 
-// Uses the document's normal Sound and native end callbacks. Only local audio is repaired;
+// Uses the document's normal Sound; the active GM handles managed track endings. Only local audio is repaired;
 // players never change shared playback documents or any other module's sounds.
 export class PlaybackSync {
-  constructor(library, changed = () => {}, {now = serverNow, timeout = 20000, tolerance = 0.3} = {}) {
+  constructor(library, changed = () => {}, {now = serverNow, timeout = 60000, tolerance = 0.3} = {}) {
     Object.assign(this,{library,changed,now,timeout,tolerance}); this.states = new Map(); this.clocks = new Map(); this.clockRetryAt = new Map(); this.manualBusy = false;
+    this.readiness = new PlaybackReadiness({ now, changed, publish:(doc,clock,ready) => library.write(async () => {
+      if (game.users.activeGM?.id !== game.user.id || !ready()) return;
+      await doc.setFlag(ID,"clock",{...clock,waiting:false,at:this.now()+READY_START_DELAY_MS});
+    }) });
+    game.socket?.on("userActivity",(userId,activity) => {
+      const message = activity?.[ID];
+      if (message?.userId === userId) this.readiness.receive(message);
+    });
+    // Accept acknowledgements from clients using the previous module channel too.
+    game.socket?.on(READINESS_CHANNEL,message => this.readiness.receive(message));
   }
   key(doc) { return `${doc.parent.id}:${doc.id}`; }
   effectiveVolume(doc) {
+    if (game.user.isGM && this.previewMuted) return 0;
     const slot = this.library.layerEntries?.find(entry=>entry.sound === doc)?.slot ?? 0;
     return (Number.isFinite(doc.volume) ? doc.volume : 0.8) * (game.user.isGM ? 1 : localLayerVolume(slot));
   }
@@ -52,7 +64,15 @@ export class PlaybackSync {
   applyVolume(state, fade = 0) {
     const volume = this.effectiveVolume(state.doc), audio = state.sound;
     audio.volume = volume;
-    if(!game.user.isGM && audio.playing && typeof audio.fade === "function") void Promise.resolve(audio.fade(volume,{duration:fade,from:fade ? 0 : volume})).catch(()=>{});
+    if((!game.user.isGM || this.previewMuted) && audio.playing && typeof audio.fade === "function") void Promise.resolve(audio.fade(volume,{duration:fade,from:fade ? 0 : volume})).catch(()=>{});
+  }
+  setPreviewMuted(muted) { this.previewMuted = muted; this.applyVolumes(); }
+  end(state) {
+    if (!this.live(state) || state.ended) return;
+    state.ended = true;
+    if (this.library.onSoundEnd) {
+      if (game.user.isGM && game.users.activeGM?.id === game.user.id) void this.library.onSoundEnd(state.doc, state.clockId).catch(error => { state.error = error.message; this.changed(); });
+    } else void state.doc._onEnd?.();
   }
   setLocalVolume(slot, value) {
     if(!Number.isInteger(slot) || slot < 0 || !Number.isFinite(value)) return Promise.reject(new Error("Некорректная громкость слоя."));
@@ -69,11 +89,16 @@ export class PlaybackSync {
   get status() {
     const states = [...this.states.values()].filter(s=>s.doc.playing);
     const failed = states.find(s=>s.error), loading = states.some(s=>s.phase === "loading");
-    return { busy: this.manualBusy || loading, error: Boolean(failed), message: failed?.error || (loading ? "Загрузка звука. Нажмите для повторной синхронизации." : "Синхронизировать звук с ведущим на этом компьютере") };
+    const waiting = this.readiness.status;
+    return { busy: this.manualBusy || loading || Boolean(waiting), error: Boolean(failed) || Boolean(waiting?.error), message: failed?.error || waiting?.message || (loading ? "Загрузка звука. Нажмите для повторной синхронизации." : "Синхронизировать звук с ведущим на этом компьютере"), waiting:Boolean(waiting), label:waiting?.label };
   }
   position(doc) {
-    const sound = doc?.sound;
-    return sound?.element && Number.isFinite(sound.element.currentTime) ? sound.element.currentTime : sound?.currentTime;
+    const clock = this.clock(doc), sound = doc?.sound;
+    // A queued Sound has no valid currentTime until its scheduled playback begins.
+    // Keep the selected offset visible through loading and the common start delay.
+    if (clock && (clock.waiting || this.now() < clock.at || !sound?.playing)) return clock.offset;
+    const position = sound?.element && Number.isFinite(sound.element.currentTime) ? sound.element.currentTime : sound?.currentTime;
+    return Number.isFinite(position) && position >= 0 ? position : clock?.offset;
   }
   live(state) { return this.states.get(state.key) === state && state.doc.playing && state.doc.path === state.path && (!state.sound || state.doc.sound === state.sound) && !state.abort.signal.aborted; }
   retire(state) {
@@ -95,23 +120,26 @@ export class PlaybackSync {
     const key = this.key(doc);
     if (!game.user.isGM || game.users.activeGM?.id !== game.user.id || this.clocks.has(key) || this.now() < (this.clockRetryAt.get(key) ?? 0)) return;
     const offset = (doc.sound?.playing ? this.position(doc) : undefined) ?? doc.pausedTime ?? 0;
-    const task = doc.setFlag(ID,"clock",{id:foundry.utils.randomID(),at:this.now(),offset:Math.max(0,offset),path:doc.path});
+    const task = doc.setFlag(ID,"clock",{id:foundry.utils.randomID(),at:this.now(),offset:Math.max(0,offset),path:doc.path,...(game.socket ? {waiting:true} : {})});
     this.clocks.set(key,task);
     void task.catch(error=>{this.clockRetryAt.set(key,this.now()+10000);console.warn(`${ID} | Не удалось сохранить момент воспроизведения`,error);})
       .finally(()=>{this.clocks.delete(key);if(this.clock(doc))void this.sync(doc);});
   }
   sync(doc, {force = false} = {}) {
     if (!doc.playing) { this.stop(doc); return Promise.resolve(); }
-    if (game.audio.locked) return Promise.resolve();
     const clock = this.clock(doc);
     if (!clock) { this.ensureClock(doc); return Promise.resolve(); }
+    if (clock.waiting) this.readiness.track(doc,clock);
+    if (game.audio.locked) { this.readiness.report(doc,clock,"locked"); return Promise.resolve(); }
     const key = this.key(doc), signature = JSON.stringify(clock);
     let state = this.states.get(key);
+    const committed = state && state.clockId === clock.id && state.waiting && !clock.waiting;
+    if (committed) { state.waiting=false; state.signature=signature; }
     if (state && (force || state.signature !== signature || state.path !== doc.path || doc.sound !== state.sound)) {
       this.states.delete(key); this.retire(state); state = null;
     }
     if (!state) {
-      state = {key,doc,path:doc.path,signature,abort:new AbortController(),phase:"idle",attempts:0,retryAt:0};
+      state = {key,doc,path:doc.path,signature,clockId:clock.id,waiting:Boolean(clock.waiting),abort:new AbortController(),phase:"idle",attempts:0,retryAt:0};
       this.states.set(key,state);
       // Retire audio that Foundry created before the module was ready.
       if (doc.sound) this.retire({...state,sound:doc.sound,abort:new AbortController()});
@@ -120,7 +148,7 @@ export class PlaybackSync {
     if (state.error && (state.attempts >= 3 || this.now() < state.retryAt)) return Promise.resolve();
     if (state.sound?.playing) {
       const target = playbackTarget(clock,this.now(),state.sound.duration,doc.repeat);
-      if (target.ended) return Promise.resolve(); // Native end event advances the playlist.
+      if (target.ended) return Promise.resolve(); // The Sound end event applies this layer's playback options.
       state.sound.loop = Boolean(doc.repeat); state.sound.volume = this.effectiveVolume(doc);
       const current = this.position(doc), duration = state.sound.duration;
       let drift = Math.abs(current - target.offset);
@@ -129,7 +157,10 @@ export class PlaybackSync {
       if (!stalled && target.delay === 0 && drift <= this.tolerance) return Promise.resolve();
       if (stalled) { this.fail(state,new Error("Звук не получает данные. Нажмите синхронизацию для повтора.")); return Promise.resolve(); }
     }
-    state.task = this.run(state,clock).finally(()=>{state.task=null;this.changed();});
+    state.task = this.run(state,clock).finally(()=>{
+      state.task=null; this.changed();
+      if (this.live(state) && state.phase === "waiting" && !this.clock(doc)?.waiting) void this.sync(doc);
+    });
     return state.task;
   }
   fail(state,error) {
@@ -138,17 +169,18 @@ export class PlaybackSync {
     if(state.doc.sound === state.sound) state.doc.sound = null;
     state.abort = new AbortController(); state.sound = null;
     state.phase = "error"; state.error = error.message || String(error);
+    this.readiness.report(state.doc,this.clock(state.doc) ?? {},"error",state.error);
     state.retryAt = this.now() + (state.attempts < 2 ? 3000 : 10000); this.changed();
   }
   async run(state,clock) {
     const signal = state.abort.signal, valid = () => this.live(state) && !signal.aborted;
     try {
       if (!state.sound) {
-        ++state.attempts; state.phase="loading"; state.error=""; this.changed();
-        const audio = state.sound = new foundry.audio.Sound(state.path,{context:state.doc.context ?? game.audio.music});
+        ++state.attempts; state.phase="loading"; state.error=""; this.readiness.report(state.doc,clock,"loading"); this.changed();
+        const audio = state.sound = new foundry.audio.Sound(state.path,{context:state.doc.context ?? game.audio.music,forceBuffer:true});
         state.doc.sound = audio;
-        audio.addEventListener("play",()=>{ if(this.live(state)) {void state.doc._onStart?.();if(!game.user.isGM)this.applyVolume(state,state.doc.fadeDuration ?? 0);} });
-        audio.addEventListener("end",()=>{ if(this.live(state)) {state.ended=true;void state.doc._onEnd?.();} });
+        audio.addEventListener("play",()=>{ if(this.live(state)) {void state.doc._onStart?.();if(!game.user.isGM || this.previewMuted)this.applyVolume(state,this.previewMuted ? 0 : state.doc.fadeDuration ?? 0);} });
+        audio.addEventListener("end",()=>this.end(state));
         audio.addEventListener("stop",()=>{ if(this.live(state)) void state.doc._onStop?.(); });
         const loading = audio.load();
         void Promise.resolve(loading).then(()=>{if(!this.live(state)||state.sound!==audio){audio.element?.pause();void Promise.resolve(audio.stop({fade:0})).catch(()=>{});}},()=>{});
@@ -159,10 +191,14 @@ export class PlaybackSync {
           const play = audio.element.play.bind(audio.element);
           audio.element.play = () => { const task=play(); task?.catch(error=>this.fail(state,error)); return task; };
         }
-      } else await bounded(state.sound.stop({fade:0}),this.timeout,signal);
+      } else if (state.sound.playing) await bounded(state.sound.stop({fade:0}),this.timeout,signal);
       if (!valid()) return;
+      // Read the live clock: the final readiness report may already have committed a start.
+      clock = this.clock(state.doc);
+      if (clock?.waiting) { state.phase="waiting"; this.readiness.report(state.doc,clock,"ready"); return; }
+      if (!clock) return;
       const target = playbackTarget(clock,this.now(),state.sound.duration,state.doc.repeat);
-      if (target.ended) { state.ended=true; if(game.user.isGM&&game.users.activeGM?.id===game.user.id) void state.doc._onEnd?.(); return; }
+      if (target.ended) { if(game.user.isGM&&game.users.activeGM?.id===game.user.id) this.end(state); else state.ended=true; return; }
       await bounded(state.sound.play({offset:target.offset,delay:target.delay,loop:Boolean(state.doc.repeat),volume:this.effectiveVolume(state.doc),fade:0}),this.timeout,signal);
       if (valid()) { state.phase="playing"; state.error=""; }
     } catch(error) { if(valid()) this.fail(state,error); }
@@ -171,6 +207,7 @@ export class PlaybackSync {
     const docs = this.library.playlists.flatMap(p=>p.sounds.contents), wanted = new Set(docs.filter(d=>d.playing).map(d=>this.key(d)));
     for (const [key,state] of this.states) if(!wanted.has(key)) {this.states.delete(key);this.retire(state);}
     for (const doc of docs) if(doc.playing) void this.sync(doc);
+    this.readiness.tick();
   }
   async resync() {
     if(this.manualBusy) return;

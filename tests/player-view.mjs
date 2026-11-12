@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { ID } from "../scripts/model.js";
 import { PlaybackSync, localLayerVolume, soundDuration } from "../scripts/sync.js";
 import { miniView, fullView, currentPlaylistView, volumeView } from "../scripts/view.js";
+import { TrackPreview } from "../scripts/preview.js";
 
 export async function playerViewTests(test) {
   const saved={game:globalThis.game,foundry:globalThis.foundry,Hooks:globalThis.Hooks};
@@ -25,12 +26,12 @@ export async function playerViewTests(test) {
       const markup=miniView(library,view);
       assert.equal((markup.match(/role="progressbar"/g)??[]).length,2);
       assert.match(markup,/data-duration>3:20/);assert.match(markup,/is-listener/);
-      assert.match(markup,/data-local-layer-volume="1"[^>]*value="1"/);
+      assert.match(volumeView(library),/data-local-layer-volume="1"[^>]*value="1"/);
       assert.doesNotMatch(markup,/data-seek|data-layer-volume=|data-action="(?:current-playlist|library|mini-all-playlists)"/);
       assert.doesNotMatch(markup,/data-local-layer-volume="1"[^>]*disabled/);
       assert.match(volumeView(library),/data-local-layer-volume="0"/);
       assert.equal(fullView(view),"");assert.equal(currentPlaylistView(view),"");
-      game.user.isGM=true;const gm=miniView(library,view);assert.match(gm,/data-seek/);assert.match(gm,/data-action="current-playlist"/);assert.match(gm,/data-layer-volume="1"/);game.user.isGM=false;
+      game.user.isGM=true;library.playbackOptions=()=>({autoplay:true,repeat:true});const gm=miniView(library,view);assert.match(gm,/data-seek/);assert.match(gm,/data-action="current-playlist"/);assert.doesNotMatch(gm,/data-layer-volume=/);assert.match(volumeView(library),/data-layer-volume="1"/);game.user.isGM=false;
     });
     await test("Player layer faders change only local audio, survive polling and resync, and apply to replacement tracks without changing GM volume",async()=>{
       const sync=new PlaybackSync(library,()=>{},{now:()=>now});
@@ -56,6 +57,25 @@ export async function playerViewTests(test) {
       PlayerWidget.prototype.refreshMiniPlaylist.call(widget);assert.equal(closed,1);
       const element={closest:()=>null};widget.closePlaylistMenu=()=>{};widget.selected=null;
       await PlayerWidget.prototype.action.call(widget,"current-playlist",element);assert.equal(widget.miniPlaylistOpen,undefined);
+    });
+    await test("GM audition mutes both layers through polling and resync, restores their latest levels on stop, end and failure, and never mutes players",async()=>{
+      game.user.isGM=true;main.playing=second.playing=true;
+      main.parent.sounds.get=id=>id===main.id?main:undefined;
+      library.layerEntries=[{slot:1,sound:second}];library.playlists=[main.parent,second.parent];
+      const sync=new PlaybackSync(library,()=>{},{now:()=>now});await sync.sync(main);await sync.sync(second);
+      const preview=new TrackPreview(()=>{},muted=>sync.setPreviewMuted(muted)),before=writes.length;
+      await preview.toggle(main.parent,main.id);
+      assert.equal(main.sound.volume,0);assert.equal(second.sound.volume,0);assert.ok(preview.active.sound.volume>0);
+      second.volume=0.23;await sync.sync(second);await sync.resync();
+      assert.equal(main.sound.volume,0);assert.equal(second.sound.volume,0);assert.equal(second.playing,true);
+      game.user.isGM=false;assert.ok(sync.effectiveVolume(main)>0);game.user.isGM=true;
+      await preview.stop();assert.equal(main.sound.volume,0.8);assert.equal(second.sound.volume,0.23);
+      await preview.toggle(main.parent,main.id);preview.active.sound.dispatchEvent(new Event("end"));await Promise.resolve();await Promise.resolve();
+      assert.equal(sync.previewMuted,false);assert.equal(second.sound.volume,0.23);
+      const load=Sound.prototype.load;Sound.prototype.load=async function(){this.failed=true;};
+      await assert.rejects(()=>preview.toggle(main.parent,main.id),/Не удалось/);Sound.prototype.load=load;
+      assert.equal(main.sound.volume,0.8);assert.equal(second.sound.volume,0.23);assert.equal(preview.active,null);assert.equal(writes.length,before);
+      main.playing=second.playing=false;sync.tick();game.user.isGM=false;
     });
   } finally {Object.assign(globalThis,saved);}
 }

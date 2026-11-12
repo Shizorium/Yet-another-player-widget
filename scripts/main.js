@@ -1,4 +1,4 @@
-import { ID, ROOT, STATUS, clamp, time, escapeHTML as e, audioPath, clone } from "./model.js";
+import { ID, ROOT, STATUS, clamp, time, escapeHTML as e, audioPath, youtubeSource, clone } from "./model.js";
 import { Library, uploadFile, readDuration } from "./library.js";
 import { Downloads } from "./downloads.js";
 import { miniView, fullView, currentPlaylistView, volumeView, icon } from "./view.js";
@@ -12,8 +12,8 @@ function report(error) { console.error(`${ID} |`, error); ui.notifications.error
 export class PlayerWidget {
   constructor() {
     this.library = new Library(); this.downloads = new Downloads(this.library, () => this.schedule());
-    this.preview = new TrackPreview(() => this.schedule());
     this.audioSync = new PlaybackSync(this.library, () => this.schedule());
+    this.preview = new TrackPreview(() => this.schedule(), muted => this.audioSync.setPreviewMuted(muted));
     this.selected = null; this.tab = "library"; this.query = ""; this.full = null; this.dialog = null; this.lastSignature = ""; this.uploadFiles = new Map(); this.uploadControllers = new Map();
     this.trackDrag = new TrackDrag(this); this.miniPlaylistOpen = false;
     this.miniBrowseAll = false; this.miniBrowseId = null; this.miniScrollPositions = new Map();
@@ -23,12 +23,15 @@ export class PlayerWidget {
     this.bind(this.mini);
     const savedLayout = game.settings.get(ID, "layout");
     const layout = savedLayout.version === 3 ? savedLayout : { ...savedLayout, version: 3, width: savedLayout.version === 2 ? savedLayout.width : 460, height: 78, scale: savedLayout.scale ?? 1 };
-    this.mini.style.width = `${clamp(layout.width ?? 460, 360, 800)}px`;
-    this.mini.style.height = `${clamp(layout.height ?? 78, 72, 140)}px`;
+    this.mini.style.width = `${clamp(layout.width ?? 460, 180, 800)}px`;
+    this.mini.style.height = `${clamp(layout.height ?? 78, 48, 140)}px`;
     this.mini.style.setProperty("--yapw-scale", clamp(layout.scale ?? 1, 0.8, 1.2));
+    this.updateMiniAppearance();
     this.position(layout.left ?? 85, layout.top ?? 110);
     this.resizeObserver = new ResizeObserver(() => {
       if (this.mini.hidden) return;
+      if (this.sizeMini()) this.schedule();
+      this.updateMarquees();
       this.keepOnScreen(); this.saveLayout();
     });
     this.resizeObserver.observe(this.mini);
@@ -49,6 +52,8 @@ export class PlayerWidget {
     document.addEventListener("visibilitychange",this.onAudioWake);
     window.addEventListener("online",this.onAudioWake);
     game.socket?.on("connect",this.onAudioWake);
+    window.addEventListener("pagehide",()=>this.audioSync.readiness.deactivate());
+    window.addEventListener("pageshow",()=>{ if(game.socket)this.audioSync.readiness.activate(); });
     document.addEventListener("pointerdown",()=>this.audioSync.tick(),{once:true});
     this.reconcileTimer = setInterval(() => {
       if (game.user.isGM && game.users.activeGM?.id === game.user.id) void this.library.reconcile().catch(report);
@@ -57,6 +62,35 @@ export class PlayerWidget {
   }
   async perform(callback) { try { return await callback(); } catch (error) { report(error); } }
   schedule() { clearTimeout(this.renderTimer); this.renderTimer = setTimeout(() => this.refresh(), 100); }
+  updateMiniAppearance() {
+    const transparency = game.settings.get(ID,"miniTransparency");
+    const value = typeof transparency === "number" && Number.isFinite(transparency) ? clamp(transparency,0,100) : 80;
+    this.mini.style.setProperty("--yapw-idle-opacity",String(1-value/100));
+    this.mini.classList.toggle("is-auto-fade",game.settings.get(ID,"fadeMini") === true);
+  }
+  sizeMini() {
+    const base = clamp(parseFloat(this.mini.style.height) - this.miniExtraHeight,48,140);
+    const compact = this.mini.getBoundingClientRect().width < 300 || base < 72;
+    const changed = this.mini.classList.contains("is-compact") !== compact;
+    this.mini.classList.toggle("is-compact",compact);
+    const extraHeight = this.library.layerEntries.length * (compact ? 48 : 72);
+    if (extraHeight !== this.miniExtraHeight) {
+      this.miniExtraHeight = extraHeight; this.mini.style.setProperty("--yapw-extra-height",`${extraHeight}px`);
+      this.mini.style.height = `${base + extraHeight}px`;
+      return true;
+    }
+    return changed;
+  }
+  updateMarquees() {
+    for (const root of [this.mini,this.full].filter(Boolean)) for (const title of root.querySelectorAll(".yapw-mini-title")) {
+      const text = title.querySelector("[data-title-text]");
+      if (!text) continue;
+      const overflow = Math.max(0,text.scrollWidth - title.clientWidth);
+      title.classList.toggle("is-scrolling",overflow > 1);
+      title.style.setProperty("--title-travel",`${-overflow}px`);
+      title.style.setProperty("--title-duration",`${Math.max(5,overflow / 24 + 2)}s`);
+    }
+  }
   position(left, top) {
     this.mini.style.left = `${clamp(left, 0, Math.max(0, innerWidth - (this.mini.offsetWidth || 460)))}px`;
     this.mini.style.top = `${clamp(top, 0, Math.max(0, innerHeight - (this.mini.offsetHeight || 78)))}px`;
@@ -174,20 +208,21 @@ export class PlayerWidget {
     if (this.interacting) { this.schedule(); return; }
     const sound = this.library.current;
     if (this.preview.active && (!game.user.isGM || !game.playlists.get(this.preview.active.playlistId)?.sounds.has(this.preview.active.trackId))) void this.preview.stop().catch(report);
-    const sharedPlaying = this.library.playing;
+    const sharedActive = this.library.active;
     if (this.playlistMenu && (!game.user.isGM || !this.library.playlists.some(p => p.id === this.menuPlaylistId))) this.closePlaylistMenu();
     if (!this.currentPlaylist || !game.user.isGM) this.closeMiniPlaylist(false);
     if(!game.user.isGM) this.closeFull();
-    const entries = this.library.layerEntries, extraHeight = entries.length * 72;
-    if (extraHeight !== this.miniExtraHeight) {
-      const baseHeight = clamp(parseFloat(this.mini.style.height) - this.miniExtraHeight,72,140);
-      this.miniExtraHeight = extraHeight; this.mini.style.setProperty("--yapw-extra-height",`${extraHeight}px`);
-      this.mini.style.height = `${baseHeight + extraHeight}px`;
-    }
-    const signature = JSON.stringify([game.user.isGM, this.audioSync.status, sound?.id, sound?.playing, sound?.name, sound?.getFlag(ID,"cover"), sound?.parent.id, this.currentPlaylist?.id, this.miniPlaylistOpen, entries.map(({slot,sound:s})=>[slot,s.parent.id,s.id,s.playing,s.name,s.getFlag(ID,"cover")])]);
+    const entries = this.library.layerEntries;
+    this.sizeMini();
+    const signature = JSON.stringify([game.user.isGM, game.settings.get(ID,"layerPlayback"), this.audioSync.status, sound?.id, sound?.playing, sound?.name, sound?.getFlag(ID,"cover"), sound?.parent.id, this.currentPlaylist?.id, this.miniPlaylistOpen, entries.map(({slot,sound:s})=>[slot,s.parent.id,s.id,s.playing,s.name,s.getFlag(ID,"cover")])]);
     if (signature !== this.lastSignature) { this.mini.innerHTML = miniView(this.library, this); this.lastSignature = signature; }
-    this.mini.hidden = !game.user.isGM && !sharedPlaying;
-    if (!game.user.isGM && !sharedPlaying) { this.closeFull(); this.closeVolume(); this.dialog?.close(); }
+    this.mini.hidden = !game.user.isGM && !sharedActive;
+    if (!game.user.isGM && !sharedActive) { this.closeFull(); this.closeVolume(); this.dialog?.close(); }
+    if (this.volumePopup) {
+      const key = JSON.stringify([game.user.isGM, entries.map(entry => entry.slot)]);
+      if (key !== this.volumeViewKey) { this.volumePopup.innerHTML = volumeView(this.library); this.volumeViewKey = key; }
+      this.positionVolume();
+    }
     this.refreshMiniPlaylist();
     if (this.full) {
       const focused = document.activeElement;
@@ -200,7 +235,7 @@ export class PlayerWidget {
       if (search) { const input = this.full.querySelector("[data-search]"); input.focus(); input.setSelectionRange(selection,selection); }
       if (focusedVolume != null) this.full.querySelector(`[data-layer-volume="${focusedVolume}"]`)?.focus();
     }
-    this.updateTime();
+    this.updateMarquees(); this.updateTime();
   }
   updateTime() {
     for (const root of [this.mini,this.full,this.volumePopup].filter(Boolean)) {
@@ -280,9 +315,10 @@ export class PlayerWidget {
     if (!this.miniPlaylist) return;
     const r = this.mini.getBoundingClientRect(), below = innerHeight - r.bottom - 12, above = r.top - 12;
     const useAbove = below < 140 && above > below;
-    this.miniPlaylist.style.width = `${Math.min(r.width, innerWidth - 16)}px`;
+    const width = Math.min(r.width,innerWidth);
+    this.miniPlaylist.style.width = `${width}px`;
     this.miniPlaylist.style.maxHeight = `${Math.max(90, Math.min(260, useAbove ? above : below))}px`;
-    this.miniPlaylist.style.left = `${clamp(r.left, 8, Math.max(8, innerWidth - Math.min(r.width, innerWidth - 16) - 8))}px`;
+    this.miniPlaylist.style.left = `${clamp(r.left,0,Math.max(0,innerWidth-width))}px`;
     const height = this.miniPlaylist.getBoundingClientRect().height;
     this.miniPlaylist.style.top = `${useAbove ? Math.max(8,r.top-height-4) : r.bottom+4}px`;
   }
@@ -291,7 +327,7 @@ export class PlayerWidget {
     if (!this.volumePopup) {
       this.volumePopup = document.createElement("section"); this.volumePopup.className = "yapw yapw-volume-popup";
       this.volumePopup.setAttribute("role","dialog"); this.volumePopup.setAttribute("aria-label","Громкость");
-      this.volumePopup.innerHTML = volumeView(this.library); this.bind(this.volumePopup);
+      this.volumePopup.innerHTML = volumeView(this.library); this.volumeViewKey = JSON.stringify([game.user.isGM,this.library.layerEntries.map(entry => entry.slot)]); this.bind(this.volumePopup);
       this.volumePopup.addEventListener("pointerenter", () => clearTimeout(this.volumeCloseTimer));
       this.volumePopup.addEventListener("pointerleave", () => this.queueCloseVolume());
       this.volumePopup.addEventListener("focusout", () => this.queueCloseVolume());
@@ -305,7 +341,7 @@ export class PlayerWidget {
     if (!this.volumePopup || !trigger) return;
     const r = trigger.getBoundingClientRect(), popup = this.volumePopup.getBoundingClientRect();
     this.volumePopup.style.left = `${clamp(r.right-popup.width,8,Math.max(8,innerWidth-popup.width-8))}px`;
-    this.volumePopup.style.top = `${r.top > popup.height+8 ? r.top-popup.height-4 : Math.min(innerHeight-popup.height-8,r.bottom+4)}px`;
+    this.volumePopup.style.top = `${Math.max(8,r.top > popup.height+8 ? r.top-popup.height-4 : Math.min(innerHeight-popup.height-8,r.bottom+4))}px`;
   }
   queueCloseVolume() {
     clearTimeout(this.volumeCloseTimer);
@@ -438,12 +474,25 @@ export class PlayerWidget {
   }
   async settings() {
     const layout = game.settings.get(ID,"layout"), helper = game.settings.get(ID,"helper");
-    const help = game.user.isGM ? "Перетаскивайте плеер за обложку или название; двойной щелчок открывает библиотеку справа. Нижняя стрелка раскрывает текущий плейлист. Размеры окон сохраняются отдельно у каждого участника." : "Перетаскивайте плеер за обложку или название, изменяйте размер за правый нижний угол. Динамик открывает личную громкость основного слоя и всей музыки; громкость второго слоя находится рядом с его прогрессом. Изменения громкости слышны только вам.";
-    const dialog = await this.form("Настройки плеера", `<label>Ширина виджета, пиксели<input name="width" type="number" min="360" max="800" value="${Math.round(this.mini.getBoundingClientRect().width || layout.width || 460)}" required></label><label>Высота виджета, пиксели<input name="height" type="number" min="72" max="140" value="${Math.round((this.mini.getBoundingClientRect().height - this.miniExtraHeight) || 78)}" required></label><label>Масштаб текста и кнопок<select name="scale">${[0.8,1,1.2].map(n => `<option value="${n}" ${(layout.scale ?? 1) === n ? "selected" : ""}>${Math.round(n*100)}%</option>`).join("")}</select></label><p class="yapw-help">${help}</p>${game.user.isGM ? `<hr><h3>Загрузки YouTube</h3><label>Адрес помощника<input name="url" type="url" value="${e(helper.url)}" placeholder="http://127.0.0.1:32123" required></label><label>Ключ подключения<input name="token" type="password" value="${e(helper.token)}" autocomplete="off"></label><p class="yapw-help">Запустите <strong>helper/Start-Helper.cmd</strong> в папке модуля на компьютере сервера Foundry, затем скопируйте ключ из его окна. Ключ сохраняется только в вашем браузере. Помощником пользуется активный ГМ. Для адреса Foundry, отличающегося от localhost:30000, задайте YAPW_ORIGINS при запуске.</p><button type="button" data-check>Проверить подключение</button><p data-check-result class="yapw-help"></p>` : ""}`, async data => {
-      const next = { ...game.settings.get(ID,"layout"), version: 3, width: clamp(data.get("width"),360,800), height: clamp(data.get("height"),72,140), scale: clamp(data.get("scale"),0.8,1.2) };
+    const transparency = game.settings.get(ID,"miniTransparency");
+    const visibility = `<hr><h3>Видимость мини-плеера</h3><label class="yapw-toggle-setting"><input name="fadeMini" type="checkbox" ${game.settings.get(ID,"fadeMini") === true ? "checked" : ""}>Затухание без наведения</label><label><span>Прозрачность без наведения <output data-transparency-value>${Number.isFinite(transparency) ? clamp(transparency,0,100) : 80}%</output></span><input name="miniTransparency" aria-label="Прозрачность мини-плеера без наведения" type="range" min="0" max="100" step="1" value="${Number.isFinite(transparency) ? clamp(transparency,0,100) : 80}"></label><p class="yapw-help">Ваша личная настройка, сохраняется для вашего пользователя. Через 1,5 секунды без наведения мини-плеер становится прозрачным, при наведении снова виден полностью. 0% — полностью виден, 100% — полностью прозрачен.</p>`;
+    const help = game.user.isGM ? "Перетаскивайте плеер за обложку или название; двойной щелчок открывает библиотеку справа. Нижняя стрелка раскрывает текущий плейлист. Размеры окон сохраняются отдельно у каждого участника." : "Перетаскивайте плеер за обложку или название, изменяйте размер за правый нижний угол. Динамик на первом слое открывает личную громкость всех слоёв и всей музыки. Изменения громкости слышны только вам.";
+    const dialog = await this.form("Настройки плеера", `<label>Ширина виджета, пиксели<input name="width" type="number" min="180" max="800" value="${Math.round(this.mini.getBoundingClientRect().width || layout.width || 460)}" required></label><label>Высота виджета, пиксели<input name="height" type="number" min="48" max="140" value="${Math.round((this.mini.getBoundingClientRect().height - this.miniExtraHeight) || 78)}" required></label><label>Масштаб текста и кнопок<select name="scale">${[0.8,1,1.2].map(n => `<option value="${n}" ${(layout.scale ?? 1) === n ? "selected" : ""}>${Math.round(n*100)}%</option>`).join("")}</select></label><p class="yapw-help">${help}</p>${visibility}${game.user.isGM ? `<hr><h3>Загрузки YouTube</h3><label>Адрес помощника<input name="url" type="url" value="${e(helper.url)}" placeholder="http://127.0.0.1:32123" required></label><label>Ключ подключения<input name="token" type="password" value="${e(helper.token)}" autocomplete="off"></label><p class="yapw-help">Запустите <strong>helper/Start-Helper.cmd</strong> в папке модуля на компьютере сервера Foundry, затем скопируйте ключ из его окна. Ключ сохраняется только в вашем браузере. Помощником пользуется активный ГМ. Для адреса Foundry, отличающегося от localhost:30000, задайте YAPW_ORIGINS при запуске.</p><button type="button" data-check>Проверить подключение</button><p data-check-result class="yapw-help"></p>` : ""}`, async data => {
+      const next = { ...game.settings.get(ID,"layout"), version: 3, width: clamp(data.get("width"),180,800), height: clamp(data.get("height"),48,140), scale: clamp(data.get("scale"),0.8,1.2) };
       await game.settings.set(ID,"layout",next);
       this.mini.style.width = `${next.width}px`; this.mini.style.height = `${next.height + this.miniExtraHeight}px`; this.mini.style.setProperty("--yapw-scale",next.scale); this.keepOnScreen();
-      if (game.user.isGM) { await game.settings.set(ID,"helper",{url:String(data.get("url")).trim().replace(/\/$/,""), token:String(data.get("token")).trim()}); void this.downloads.tick(); }
+      await game.settings.set(ID,"fadeMini",data.has("fadeMini"));
+      await game.settings.set(ID,"miniTransparency",clamp(data.get("miniTransparency"),0,100));
+      this.updateMiniAppearance();
+      if (game.user.isGM) {
+        await game.settings.set(ID,"helper",{url:String(data.get("url")).trim().replace(/\/$/,""), token:String(data.get("token")).trim()}); void this.downloads.tick();
+      }
+    });
+    const transparencyInput = dialog.querySelector('[name="miniTransparency"]');
+    transparencyInput?.style.setProperty("--progress",`${transparencyInput.value}%`);
+    transparencyInput?.addEventListener("input",event=>{
+      dialog.querySelector("[data-transparency-value]").textContent=`${event.target.value}%`;
+      event.target.style.setProperty("--progress",`${event.target.value}%`);
     });
     dialog.querySelector("[data-check]")?.addEventListener("click", async event => {
       event.target.disabled = true;
@@ -454,23 +503,42 @@ export class PlayerWidget {
     });
   }
   async addDialog(playlistId) {
-    const dialog = await this.form("Добавить музыку", `<p class="yapw-help">Назначение: <strong>${e(game.playlists.get(playlistId)?.name)}</strong></p><label>Название (необязательно)<input name="name" maxlength="180" placeholder="Название из файла или YouTube"></label><label>Видео или целый плейлист YouTube<input name="youtube" placeholder="https://www.youtube.com/watch?v=…"></label><div class="yapw-form-divider">или аудиофайл</div><label>Выбрать на компьютере<input type="file" name="files" multiple accept="audio/*,.mp3,.ogg,.wav,.flac,.m4a,.aac,.webm,.opus"></label><label>Файл в хранилище Foundry<div class="yapw-input-row"><input name="path" placeholder="music/track.ogg"><button type="button" data-browse title="Обзор файлов">${icon("folder-open")}</button></div></label><p class="yapw-help">Ссылка на плейлист добавит все его треки в выбранный плейлист. Видео и превью скачиваются автоматически по очереди. Для одной композиции из плейлиста используйте ссылку без параметра list.</p>`, async data => {
-      const youtube = String(data.get("youtube") || "").trim(), path = String(data.get("path") || "").trim(), name = String(data.get("name") || "").trim();
+    const dialog = await this.form("Добавить музыку", `<p class="yapw-help">Назначение: <strong>${e(game.playlists.get(playlistId)?.name)}</strong></p><label>Название (необязательно)<input name="name" maxlength="180" placeholder="Название из файла или YouTube"></label><div class="yapw-source-fields" data-youtube-fields><label>Видео или плейлист YouTube<input name="youtube" placeholder="https://www.youtube.com/watch?v=…"></label></div><p class="yapw-help">После ссылки появится следующее поле. Можно вставить несколько ссылок сразу, разделив их пробелами или переносами строк.</p><div class="yapw-form-divider">или аудиофайлы</div><label>Выбрать несколько файлов на компьютере<input type="file" name="files" multiple accept="audio/*,.mp3,.ogg,.wav,.flac,.m4a,.aac,.webm,.opus"></label><label>Файл в хранилище Foundry<div class="yapw-input-row"><input name="path" placeholder="music/track.ogg"><button type="button" data-browse title="Обзор файлов">${icon("folder-open")}</button></div></label><p class="yapw-help">Ссылка на плейлист добавит все его треки. Для одной композиции используйте ссылку без параметра list. Файлы из обычных плейлистов приложения доступны через «Импорт из Foundry» в библиотеке.</p>`, async data => {
+      const youtube = data.getAll("youtube").map(value => String(value).trim()).filter(Boolean), path = String(data.get("path") || "").trim(), name = String(data.get("name") || "").trim();
       const files = data.getAll("files").filter(file => file.size);
-      if (!youtube && !path && !files.length) throw new Error("Добавьте ссылку или выберите файл.");
-      if (youtube) {
-        const t = await this.library.addYoutube(playlistId,youtube,name);
-        if (name) await this.library.edit(playlistId, tracks => { tracks.find(item => item.id === t.id).customName = true; });
-      }
+      if (!youtube.length && !path && !files.length) throw new Error("Добавьте ссылку или выберите файл.");
+      for (const source of youtube) youtubeSource(source);
+      if (path) audioPath(path);
+      if (youtube.length) await this.library.addYoutubeBatch(playlistId,youtube,name);
       if (path) { await this.library.addFile(playlistId,path,name,await readDuration(path)); }
       // Uploads continue outside the dialog and appear immediately in the download queue.
-      for (const file of files) {
-        const id = foundry.utils.randomID(); this.uploadFiles.set(id,file);
-        await this.library.edit(playlistId, tracks => tracks.push({ id, name: name || file.name.replace(/\.[^.]+$/,""), kind:"track", type:"upload", status:"queued", duration:null, path:"", cover:"", progress:0 }));
-        void this.perform(() => this.upload(playlistId,id));
+      const uploads = files.map(file => ({ id:foundry.utils.randomID(), file }));
+      if (uploads.length) {
+        await this.library.edit(playlistId, tracks => tracks.push(...uploads.map(({id,file}) => ({ id, name: name || file.name.replace(/\.[^.]+$/,""), kind:"track", type:"upload", status:"queued", duration:null, path:"", cover:"", progress:0 }))));
+        for (const {id,file} of uploads) { this.uploadFiles.set(id,file); void this.perform(() => this.upload(playlistId,id)); }
       }
       void this.downloads.tick();
     }, "Добавить");
+    const fields = dialog.querySelector("[data-youtube-fields]");
+    const appendField = () => {
+      const label = document.createElement("label"); label.textContent = "Ещё ссылка YouTube";
+      const input = document.createElement("input"); input.name = "youtube"; input.placeholder = "https://www.youtube.com/watch?v=…";
+      label.append(input); fields.append(label); return input;
+    };
+    const ensureField = () => {
+      const last = fields.querySelector("label:last-child input");
+      try { youtubeSource(last.value); appendField(); } catch { /* Keep one empty field after a valid link. */ }
+    };
+    fields.addEventListener("input", ensureField);
+    fields.addEventListener("paste", event => {
+      if (!event.target.matches('[name="youtube"]')) return;
+      const sources = event.clipboardData?.getData("text").trim().split(/\s+/) ?? [];
+      if (sources.length < 2) return;
+      event.preventDefault();
+      event.target.setRangeText(sources[0], event.target.selectionStart, event.target.selectionEnd, "end");
+      for (const source of sources.slice(1)) appendField().value = source;
+      ensureField();
+    });
     dialog.querySelector("[data-browse]").addEventListener("click", () => {
       dialog.dataset.picking = "true"; dialog.close();
       const picker = new foundry.applications.apps.FilePicker.implementation({ type:"audio", callback:path => { dialog.querySelector('[name="path"]').value = path; } });
@@ -478,9 +546,34 @@ export class PlayerWidget {
       void picker.render({force:true});
     });
   }
+  async confirmImport(source) {
+    const fromFoundry = source === "foundry";
+    const dialog = await this.form(fromFoundry ? "Импортировать музыку из Foundry?" : "Импортировать из YouTube Player Widget?",
+      fromFoundry
+        ? '<p>Открыть импорт музыки из плейлистов Foundry?</p><p class="yapw-help">На следующем шаге можно выбрать плейлисты для добавления в библиотеку. Исходные плейлисты и аудиофайлы сохранятся.</p>'
+        : '<p>Добавить плейлисты YouTube Player Widget в библиотеку?</p><p class="yapw-help">Новые треки будут поставлены в очередь скачивания вместе с превью. Уже импортированные ссылки повторно не добавятся.</p>',
+      async () => {
+        if (fromFoundry) return this.importFoundryDialog();
+        const count = await this.library.importYoutube();
+        ui.notifications.info(`Импортировано: ${count.playlists} плейлистов, ${count.tracks} новых треков. Загрузки добавлены в очередь.`);
+        void this.downloads.tick();
+      }, fromFoundry ? "Продолжить" : "Импортировать");
+    dialog.querySelector("footer [data-cancel]").focus();
+    return dialog;
+  }
+  async importFoundryDialog() {
+    const playlists = this.library.foundryPlaylists;
+    if (!playlists.length) { ui.notifications.info("В Foundry нет других плейлистов с аудиофайлами для импорта."); return; }
+    return this.form("Импорт музыки из Foundry", `<p class="yapw-help">Выберите плейлисты приложения. Музыка появится в библиотеке сразу, исходные плейлисты сохранятся. Повторный импорт добавляет только новые треки.</p>${playlists.map(p => `<label class="yapw-import-choice"><input type="checkbox" name="playlists" value="${e(p.id)}" checked><span>${e(p.name)} · ${p.sounds.contents.length} треков</span></label>`).join("")}`, async data => {
+      const ids = data.getAll("playlists");
+      if (!ids.length) throw new Error("Выберите хотя бы один плейлист.");
+      const count = await this.library.importFoundry(ids);
+      ui.notifications.info(`Импортировано: ${count.playlists} плейлистов, ${count.tracks} новых треков.`);
+    }, "Импортировать");
+  }
   async upload(playlistId,id) {
     const file = this.uploadFiles.get(id);
-    if (!file) throw new Error("После перезагрузки страницы выберите исходный файл повторно через «Добавить трек».");
+    if (!file) throw new Error("После перезагрузки страницы выберите исходный файл повторно через «Добавить музыку».");
     this.uploadControllers.get(id)?.abort();
     const controller = new AbortController(); this.uploadControllers.set(id, controller);
     this.uploadChain = (this.uploadChain ?? Promise.resolve()).catch(() => {}).then(async () => {
@@ -542,6 +635,8 @@ export class PlayerWidget {
     if (action === "deselect") { this.selected = null; this.refresh(); return; }
     if (action.startsWith("tab-")) { this.tab = action.slice(4); this.refresh(); return; }
     if (!game.user.isGM) throw new Error("Управление доступно ведущему.");
+    if (action === "autoplay" || action === "repeat") { await this.library.togglePlaybackOption(slot,action); this.schedule(); return; }
+    if (action === "import-foundry") return this.confirmImport("foundry");
     if (action === "create" || action === "rename") return this.form(action === "create" ? "Новый плейлист" : "Название плейлиста", `<label>Название<input name="name" required maxlength="180" value="${action === "rename" ? e(game.playlists.get(pid)?.name) : ""}" autofocus></label>`, async data => {
       const name = String(data.get("name")).trim(); if (!name) throw new Error("Введите название.");
       if (action === "create") { const p = await this.library.create(name); this.selected = p.id; this.tab = "library"; } else await game.playlists.get(pid).update({name});
@@ -562,7 +657,7 @@ export class PlayerWidget {
     if (action === "next" || action === "previous") { await this.preview.stop(); return this.library.step(action === "next" ? 1 : -1,slot); }
     if (action === "retry") {
       const t = this.library.tracks(game.playlists.get(pid)).find(t=>t.id===tid);
-      if (t?.type === "upload") { if (!this.uploadFiles.has(tid)) throw new Error("Выберите исходный файл повторно через «Добавить трек»."); await this.library.updateTrack(tid, t => Object.assign(t, { status: "queued", error: "", cancelRequested: false, queueDismissed: false })); return this.upload(pid,tid); }
+      if (t?.type === "upload") { if (!this.uploadFiles.has(tid)) throw new Error("Выберите исходный файл повторно через «Добавить музыку»."); await this.library.updateTrack(tid, t => Object.assign(t, { status: "queued", error: "", cancelRequested: false, queueDismissed: false })); return this.upload(pid,tid); }
       await this.library.retry(pid,tid); void this.downloads.tick(); return;
     }
     if (action === "cancel-download") return this.cancelDownloads(pid,tid);
@@ -575,7 +670,7 @@ export class PlayerWidget {
         await this.library.retry(p.id);
         for (const t of this.library.tracks(p).filter(t=>t.type==="upload" && t.status==="error" && !t.queueDismissed)) { if (this.uploadFiles.has(t.id)) void this.upload(p.id,t.id); else missing++; }
       }
-      if (missing) ui.notifications.warn(`Для ${missing} файлов выберите оригинал заново через «Добавить трек».`);
+      if (missing) ui.notifications.warn(`Для ${missing} файлов выберите оригинал заново через «Добавить музыку».`);
       void this.downloads.tick(); return;
     }
     if (action === "remove-track") return this.library.removeTrack(pid,tid);
@@ -594,7 +689,7 @@ export class PlayerWidget {
         void this.downloads.tick();
       });
     }
-    if (action === "import") { const count = await this.library.importYoutube(); ui.notifications.info(`Импортировано: ${count.playlists} плейлистов, ${count.tracks} новых треков. Загрузки добавлены в очередь.`); void this.downloads.tick(); return; }
+    if (action === "import") return this.confirmImport("youtube");
     if (action === "export") {
       const data = { module:ID,version:1,playlists:this.library.playlists.map(p=>({name:p.name,tracks:this.library.tracks(p)})) };
       const url = URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));
@@ -628,11 +723,18 @@ Hooks.once("init", () => {
   game.settings.register(ID,"helper",{scope:"client",config:false,type:Object,default:{url:"http://127.0.0.1:32123",token:""}});
   game.settings.register(ID,"selection",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
   game.settings.register(ID,"layerVolumes",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
+  game.settings.register(ID,"layerPlayback",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
   game.settings.register(ID,"localLayerVolumes",{scope:"client",config:false,type:Object,default:{},onChange:()=>{player?.audioSync.applyVolumes();player?.updateTime();}});
+  // Keep the old shared values as initial preferences until each user saves their own.
+  const legacyVisibility = key => game.settings.storage?.get("world")?.getSetting(`${ID}.${key}`)?.value;
+  const legacyFade = legacyVisibility("fadeMini"), legacyTransparency = legacyVisibility("miniTransparency");
+  game.settings.register(ID,"fadeMini",{name:"Затухание мини-плеера без наведения",hint:"Личная настройка вашего пользователя. Без наведения мини-плеер становится прозрачным, при наведении снова виден полностью.",scope:"user",config:true,type:Boolean,default:legacyFade === true,onChange:()=>player?.updateMiniAppearance()});
+  game.settings.register(ID,"miniTransparency",{name:"Прозрачность мини-плеера без наведения (%)",hint:"Личная настройка. 0% — полностью виден, 100% — полностью прозрачен. Применяется при включённом затухании.",scope:"user",config:true,type:Number,range:{min:0,max:100,step:1},default:Number.isFinite(legacyTransparency) ? clamp(legacyTransparency,0,100) : 80,onChange:()=>player?.updateMiniAppearance()});
   game.keybindings.register(ID,"library",{name:"Открыть музыкальную библиотеку",editable:[{key:"KeyM",modifiers:["Control","Alt"]}],onDown:()=>{ player?.full ? player.closeFull() : player?.openFull(); return true; }});
 });
 Hooks.once("ready", async () => {
   player = new PlayerWidget();
+  if (game.socket) player.audioSync.readiness.activate();
   game.modules.get(ID).api = { open:()=>player.openFull(), settings:()=>player.settings(), sync:()=>player.audioSync.resync(), widget:player, importYoutube:()=>player.library.importYoutube() };
   if (game.user.isGM && game.users.activeGM?.id === game.user.id) {
     await player.perform(async () => {
@@ -645,6 +747,7 @@ Hooks.once("ready", async () => {
 });
 Hooks.on("preUpdatePlaylist",(playlist,changes)=>{for(const change of changes.sounds ?? []) stampPlayback(playlist.sounds.get(change._id),change);});
 Hooks.on("preUpdatePlaylistSound",(sound,changes)=>stampPlayback(sound,changes));
+Hooks.on("userConnected",user=> { player?.audioSync.readiness.userConnected(user); player?.audioSync.tick(); });
 for (const hook of ["createPlaylist","updatePlaylist","deletePlaylist","createPlaylistSound","updatePlaylistSound","deletePlaylistSound","globalPlaylistVolumeChanged"]) Hooks.on(hook,()=> {
   player?.schedule();
   player?.audioSync.tick();

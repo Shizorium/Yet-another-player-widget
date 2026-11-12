@@ -7,7 +7,7 @@ import http from "node:http";
 import { ID, youtubeSource, youtubeTrack, importPlan, audioPath, time, escapeHTML, isInDownloadQueue, isDownloadFinished } from "../scripts/model.js";
 import {Library} from "../scripts/library.js";
 import {TrackPreview} from "../scripts/preview.js";
-import {miniView, fullView, currentPlaylistView} from "../scripts/view.js";
+import {miniView, fullView, currentPlaylistView, volumeView} from "../scripts/view.js";
 import {Downloads} from "../scripts/downloads.js";
 import {Downloader,createHelper} from "../helper/server.mjs";
 
@@ -36,21 +36,26 @@ await test("Installed YouTube Player Widget format imports without duplicates",(
 function collection(items=[]) {
   return {contents:items,filter:cb=>items.filter(cb),find:cb=>items.find(cb),some:cb=>items.some(cb),get:id=>items.find(i=>i.id===id),has:id=>items.some(i=>i.id===id)};
 }
-let nextId=0,documents=[],selection={},layerVolumes={};
+let nextId=0,documents=[],selection={},layerVolumes={},layerPlayback={};
+function updateMockSound(sound, changes) {
+  const flags = {...sound.flags?.[ID], ...changes.flags?.[ID]};
+  Object.assign(sound,changes);
+  sound.flags = {...sound.flags,[ID]:flags};
+}
 function mockPlaylist(data={}) {
   const flags=data.flags?.[ID]??{managed:true,tracks:[]};
   const p={id:`playlist${++nextId}`,name:data.name??"Test",mode:0,playing:false,sounds:collection(),getFlag:(_,key)=>flags[key],setFlag:async(_,key,value)=>{ flags[key]=structuredClone(value); },
-    async createEmbeddedDocuments(type,entries) { for(const entry of entries) { const sf=entry.flags?.[ID]??{}; p.sounds.contents.push({...entry,id:entry._id,parent:p,playing:false,pausedTime:null,sound:{currentTime:37,duration:123},getFlag:(_,key)=>sf[key],update:async changes=>Object.assign(p.sounds.get(entry._id),changes)}); } },
-    async updateEmbeddedDocuments(type,entries) { for(const entry of entries) Object.assign(p.sounds.get(entry._id),entry); },
+    async createEmbeddedDocuments(type,entries) { for(const entry of entries) { p.sounds.contents.push({...entry,id:entry._id,parent:p,playing:false,pausedTime:null,sound:{currentTime:37,duration:123},getFlag:(_,key)=>p.sounds.get(entry._id).flags?.[ID]?.[key],update:async changes=>updateMockSound(p.sounds.get(entry._id),changes)}); } },
+    async updateEmbeddedDocuments(type,entries) { for(const entry of entries) updateMockSound(p.sounds.get(entry._id),entry); },
     async deleteEmbeddedDocuments(type,ids) { p.sounds.contents.splice(0,p.sounds.contents.length,...p.sounds.contents.filter(s=>!ids.includes(s.id))); },
-    async update(changes) { const {sounds=[],...parent}=changes; Object.assign(p,parent); for(const s of sounds) Object.assign(p.sounds.get(s._id),s); },
+    async update(changes) { const {sounds=[],...parent}=changes; Object.assign(p,parent); for(const s of sounds) updateMockSound(p.sounds.get(s._id),s); },
     async stopAll() { p.playing=false; p.sounds.contents.forEach(s=>Object.assign(s,{playing:false})); },
     async playSound(s) { p.sounds.contents.forEach(item=>{ item.playing=item===s; if(item!==s)item.pausedTime=null; }); p.playing=true; },
     async playNext(id,{direction}) { const items=p.sounds.contents; const i=items.findIndex(s=>s.id===id); await p.playSound(items[(i+direction+items.length)%items.length]); },
     async delete() { await p.stopAll(); documents.splice(documents.indexOf(p),1); return p; }
   }; documents.push(p); return p;
 }
-globalThis.game={user:{id:"gm",isGM:true},users:{activeGM:{id:"gm"}},world:{id:"test-world"},playlists:collection(documents),settings:{get:(_,key)=>key==="selection"?selection:key==="layerVolumes"?layerVolumes:{url:"http://localhost",token:"test"},set:async(_,key,value)=>{if(key==="selection")selection=value;if(key==="layerVolumes")layerVolumes=structuredClone(value);}}};
+globalThis.game={user:{id:"gm",isGM:true},users:{activeGM:{id:"gm"}},world:{id:"test-world"},playlists:collection(documents),settings:{get:(_,key)=>key==="selection"?selection:key==="layerVolumes"?layerVolumes:key==="layerPlayback"?layerPlayback:{url:"http://localhost",token:"test"},set:async(_,key,value)=>{if(key==="selection")selection=value;if(key==="layerVolumes")layerVolumes=structuredClone(value);if(key==="layerPlayback")layerPlayback=structuredClone(value);}}};
 globalThis.CONFIG={Playlist:{documentClass:{create:async data=>mockPlaylist(data)}}};
 globalThis.CONST={PLAYLIST_MODES:{SEQUENTIAL:0,SIMULTANEOUS:2}};
 globalThis.foundry={utils:{randomID:()=>`track${++nextId}`}};
@@ -68,6 +73,80 @@ await test("Native playback supports pause, synchronized seek, next and GM restr
   await lib.toggle(); assert.equal(lib.current.id,second.id);
   game.user.isGM=false; await assert.rejects(()=>lib.play(p.id,first.id),/ведущий/); game.user.isGM=true;
   await lib.stop(); assert.equal(p.sounds.contents.some(s=>s.playing),false);
+});
+
+await test("Layer repeat defaults on, overrides autoplay, and toggles persist independently across replacement tracks",async()=>{
+  const lib=new Library(),p=await lib.create("Playback preferences");
+  for(const name of ["main","layer","next"])await lib.addFile(p.id,`music/${name}.mp3`,name,123);
+  const [main,layer,next]=p.sounds.contents;
+  assert.deepEqual(lib.playbackOptions(0),{autoplay:true,repeat:true});
+  await lib.play(p.id,main.id);await lib.addLayer(p.id,layer.id);
+  assert.equal(main.repeat,true);assert.equal(layer.repeat,true);
+  await lib.onSoundEnd(main,main.getFlag(ID,"clock").id);
+  assert.equal(lib.current,main);assert.equal(main.playing,true);assert.equal(layer.playing,true);
+  await lib.togglePlaybackOption(0,"repeat");
+  assert.equal(main.repeat,false);assert.equal(layer.repeat,true);assert.equal(lib.playbackOptions(1).repeat,true);
+  assert.equal(main.getFlag(ID,"clock").offset,37);
+  await lib.onSoundEnd(main,main.getFlag(ID,"clock").id);
+  assert.equal(lib.current,next);assert.equal(next.repeat,false);assert.equal(layer.playing,true);
+  assert.deepEqual(new Library().playbackOptions(0),{autoplay:true,repeat:false});
+  await lib.stop();layerPlayback={};
+});
+
+await test("Natural endings advance only the ending layer, skip occupied tracks, wrap the playlist and stop when autoplay is disabled",async()=>{
+  const lib=new Library(),p=await lib.create("Independent autoplay");
+  for(const name of ["a","b","c","d"])await lib.addFile(p.id,`music/${name}.mp3`,name,123);
+  const [a,b,c,d]=p.sounds.contents;
+  await lib.togglePlaybackOption(0,"repeat");await lib.togglePlaybackOption(1,"repeat");
+  await lib.play(p.id,a.id);await lib.addLayer(p.id,b.id);
+  await lib.onSoundEnd(b,b.getFlag(ID,"clock").id);
+  assert.equal(lib.soundAt(1),c);assert.equal(a.playing,true);assert.equal(b.playing,false);
+  await lib.onSoundEnd(a,a.getFlag(ID,"clock").id);
+  assert.equal(lib.current,b);assert.equal(c.playing,true);
+  await lib.onSoundEnd(c,c.getFlag(ID,"clock").id);assert.equal(lib.soundAt(1),d);
+  await lib.onSoundEnd(d,d.getFlag(ID,"clock").id);assert.equal(lib.soundAt(1),a);
+  await lib.togglePlaybackOption(1,"autoplay");await lib.onSoundEnd(a,a.getFlag(ID,"clock").id);
+  assert.equal(a.playing,false);assert.equal(a.pausedTime,null);assert.equal(lib.soundAt(1),undefined);assert.equal(b.playing,true);
+  await lib.stop();layerPlayback={};
+});
+
+await test("Duplicate or obsolete end callbacks and a non-active GM cannot advance playback",async()=>{
+  const lib=new Library(),p=await lib.create("End race");
+  for(const name of ["a","b","c"])await lib.addFile(p.id,`music/${name}.mp3`,name,123);
+  const [a,b]=p.sounds.contents;
+  await lib.togglePlaybackOption(0,"repeat");await lib.play(p.id,a.id);
+  const old=a.getFlag(ID,"clock").id;await lib.seek(50);
+  await lib.onSoundEnd(a,old);assert.equal(lib.current,a);assert.equal(a.playing,true);
+  const current=a.getFlag(ID,"clock").id;
+  game.users.activeGM.id="other";await lib.onSoundEnd(a,current);assert.equal(lib.current,a);game.users.activeGM.id="gm";
+  await Promise.all([lib.onSoundEnd(a,current),lib.onSoundEnd(a,current)]);
+  assert.equal(lib.current,b);assert.equal(p.sounds.contents.filter(s=>s.playing).length,1);
+  await lib.stop();layerPlayback={};
+});
+
+await test("Batch YouTube additions validate atomically, deduplicate links and preserve the entered name",async()=>{
+  const lib=new Library(),p=await lib.create("Batch");
+  await assert.rejects(()=>lib.addYoutubeBatch(p.id,["abcdefghijk","invalid-link"]));assert.equal(lib.tracks(p).length,0);
+  const added=await lib.addYoutubeBatch(p.id,["abcdefghijk","https://youtu.be/abcdefghijk","lmnopqrstuv"],"Custom");
+  assert.equal(added.length,2);assert.ok(added.every(t=>t.customName&&t.name==="Custom"));
+  assert.equal((await lib.addYoutubeBatch(p.id,["abcdefghijk","slowvideo01"])).length,1);
+  assert.equal(lib.tracks(p).length,3);
+});
+
+await test("Foundry import copies chosen native playlists in order, retains originals and adds only newly discovered sounds",async()=>{
+  const lib=new Library(),source=mockPlaylist({name:"Native music",flags:{[ID]:{managed:false}}});
+  await source.createEmbeddedDocuments("PlaylistSound",[{_id:"native-b",name:"Rain",path:"music/rain.ogg",sort:2},{_id:"native-a",name:"Wind",path:"music/wind.ogg",sort:1}]);
+  source.sounds.get("native-a").playing=true;
+  const original=source.sounds.contents.map(s=>({id:s.id,playing:s.playing,path:s.path}));
+  assert.ok(lib.foundryPlaylists.includes(source));
+  assert.deepEqual(await lib.importFoundry([source.id]),{playlists:1,tracks:2});
+  const target=lib.playlists.find(p=>p.getFlag(ID,"foundryImportId")===source.id);
+  assert.deepEqual(lib.tracks(target).map(t=>t.name),["Wind","Rain"]);assert.equal(target.sounds.contents.length,2);
+  assert.deepEqual(source.sounds.contents.map(s=>({id:s.id,playing:s.playing,path:s.path})),original);
+  assert.deepEqual(await lib.importFoundry([source.id]),{playlists:0,tracks:0});
+  await source.createEmbeddedDocuments("PlaylistSound",[{_id:"native-c",name:"Fire",path:"music/fire.ogg",sort:3}]);
+  assert.deepEqual(await lib.importFoundry([source.id]),{playlists:1,tracks:1});assert.equal(target.sounds.contents.length,3);
+  assert.equal(lib.foundryPlaylists.includes(target),false);
 });
 
 await test("Switching playlists clears old pause positions and pausing keeps the newly selected track",async()=>{
@@ -188,14 +267,14 @@ await test("The secondary remains on its slot after main deletion and movement, 
   await lib.transferTrack(p.id,secondary.id,to.id);assert.equal(lib.current,undefined);assert.equal(lib.soundAt(1).parent,to);assert.equal(lib.soundAt(1).volume,0);
   await lib.normalizePlayback();assert.equal(lib.soundAt(1).playing,true);await lib.stop();assert.equal(lib.volumeFor(1),0);layerVolumes={};
 });
-await test("Both player views put independent secondary controls and a remembered fader below the primary",async()=>{
+await test("Both player views keep secondary controls below the primary and consolidate faders in the volume popup",async()=>{
   const lib=new Library(),p=await lib.create("Visible layers");await lib.addFile(p.id,"music/primary.mp3","Visible primary",123);await lib.addFile(p.id,"music/secondary.mp3","Visible secondary",123);
   const [primary,secondary]=p.sounds.contents;await lib.play(p.id,primary.id);await lib.addLayer(p.id,secondary.id);await lib.setVolume(1,0.34);
   const ui={library:lib,selected:p.id,tab:"library",query:"",downloads:{online:true,message:"Test"},currentPlaylist:p};
   for(const markup of [miniView(lib,ui),fullView(ui)]){
-    assert.ok(markup.indexOf('data-playback-layer="0"')<markup.indexOf('data-playback-layer="1"'));assert.match(markup,/aria-label="Второй слой"/);assert.match(markup,/Пауза второго слоя/);assert.match(markup,/Следующий трек второго слоя/);assert.match(markup,/Остановить второй слой/);assert.match(markup,/data-layer-volume="1"[^>]*value="0.34"/);assert.match(markup,/Позиция: Второй слой/);
+    assert.ok(markup.indexOf('data-playback-layer="0"')<markup.indexOf('data-playback-layer="1"'));assert.match(markup,/aria-label="Второй слой"/);assert.match(markup,/Пауза второго слоя/);assert.match(markup,/Следующий трек второго слоя/);assert.match(markup,/Остановить второй слой/);assert.doesNotMatch(markup,/data-layer-volume=/);assert.match(volumeView(lib),/data-layer-volume="1"[^>]*value="0.34"/);assert.match(markup,/Позиция: Второй слой/);
   }
-  game.user.isGM=false;const playerView=miniView(lib,ui);assert.doesNotMatch(playerView,/Пауза второго слоя/);assert.match(playerView,/data-local-layer-volume="1"/);assert.doesNotMatch(playerView,/data-layer-volume="1"/);game.user.isGM=true;await lib.stop();layerVolumes={};
+  game.user.isGM=false;const playerView=miniView(lib,ui);assert.doesNotMatch(playerView,/Пауза второго слоя/);assert.match(volumeView(lib),/data-local-layer-volume="1"/);assert.doesNotMatch(playerView,/data-layer-volume="1"/);game.user.isGM=true;await lib.stop();layerVolumes={};
 });
 
 const auditionSounds=[];
@@ -551,5 +630,7 @@ await test("HTTP helper requires its key, rejects unknown origins and isolates w
   } finally { await helper.close(); }
 });
 await (await import("./sync.mjs")).syncTests(test);
+await (await import("./readiness.mjs")).readinessTests(test);
+await (await import("./shared-start.mjs")).sharedStartTests(test);
 await (await import("./player-view.mjs")).playerViewTests(test);
 console.log(`\n${passed} tests passed.`);
