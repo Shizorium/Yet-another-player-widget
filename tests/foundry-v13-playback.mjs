@@ -83,10 +83,10 @@ const {default:NativeSound}=await import(pathToFileURL(path.join(appPath,"client
 // Native constructor, metadata loading and event API, with audio hardware replaced in memory.
 class MemorySound extends NativeSound {
   async _load(){this.buffer={duration:200};}
-  async play(options){this.options=options;this._state=NativeSound.STATES.PLAYING;return this;}
+  async play(options){this.options=options;this.gainNode={gain:{value:1,cancelScheduledValues(){},setValueAtTime(value){this.value=value;},linearRampToValueAtTime(value){this.value=value;}}};this.volume=options.volume;this._state=NativeSound.STATES.PLAYING;return this;}
   async stop(options){assert.equal(options.fade,0);this.stopped=true;this._state=NativeSound.STATES.STOPPED;return this;}
 }
-game.audio={music:{},locked:false};foundry.audio={Sound:MemorySound};
+game.audio={music:{currentTime:0},locked:false};foundry.audio={Sound:MemorySound};
 const selectionBefore=structuredClone(values.get("selection")),preview=new TrackPreview();
 await preview.toggle(a,aid);const audition=preview.active.sound;
 assert.ok(audition.options.offset>=60&&audition.options.offset<=100);assert.deepEqual(values.get("selection"),selectionBefore);assert.equal(library.playing,false);
@@ -103,5 +103,11 @@ assert.ok(Math.abs(primary.sound.options.offset-1.4)<0.001);assert.ok(Math.abs(s
 assert.equal(secondary.sound.options.volume,0.27);
 await library.seek(90);await synchronization.sync(primary);assert.ok(Math.abs(primary.sound.options.offset-91.4)<0.001);
 assert.equal(secondary.sound.playing,true);
+game.user.isGM=false;
+await synchronization.setLocalVolume(1,0.25);
+assert.ok(Math.abs(secondary.sound.volume-0.0675)<0.00001);assert.equal(secondary.volume,0.27);
+await synchronization.resync();assert.ok(Math.abs(secondary.sound.options.volume-0.0675)<0.00001);
+game.user.isGM=true;
+console.log("PASS Player personal volume applies to the installed v13 Sound and survives local resync without changing the shared document volume");
 await library.stop();synchronization.tick();
 console.log("PASS Shared server-time anchors, seek and two independent local sounds use the installed v13 Sound load/play/stop APIs and document flags");

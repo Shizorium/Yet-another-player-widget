@@ -10,7 +10,7 @@ $manifest = Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json
 $package = Get-Content -LiteralPath (Join-Path $moduleRoot 'package.json') -Raw | ConvertFrom-Json
 $bundle = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'bundle-info.json') -Raw | ConvertFrom-Json
 $version = $manifest.version
-if ($version -notmatch '^\d+\.\d+\.\d+$' -or $version -ne $package.version -or $version -ne $bundle.version) { throw 'Module, package and EXE versions must match.' }
+if ($version -notmatch '^\d+\.\d+\.\d+$' -or $version -ne $package.version -or $bundle.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid version or mismatched module and package versions.' }
 if ($manifest.id -ne 'yet-another-player-widget' -or -not $manifest.persistentStorage) { throw 'Invalid module id or missing persistentStorage.' }
 $baseUrl = 'https://github.com/Shizorium/Yet-another-player-widget'
 $zipName = 'yet-another-player-widget-' + $version + '.zip'
@@ -62,4 +62,4 @@ $manifestHash = Get-Sha256 (Join-Path $releaseRoot 'module.json')
 $sums = $zipHash + '  ' + $zipName + "`n" + $manifestHash + "  module.json`n" + $exeHash + "  Helper.exe`n"
 [IO.File]::WriteAllText((Join-Path $releaseRoot 'SHA256SUMS.txt'),$sums,[Text.Encoding]::ASCII)
 Write-Output ('Created: ' + $archivePath)
-Write-Output ('Files: ' + $releaseFiles.Count + '; version: ' + $version + '; ZIP SHA256: ' + $zipHash)
+Write-Output ('Files: ' + $releaseFiles.Count + '; module: ' + $version + '; helper: ' + $bundle.version + '; ZIP SHA256: ' + $zipHash)

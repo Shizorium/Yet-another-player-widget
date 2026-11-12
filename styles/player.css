@@ -16,6 +16,7 @@
 .yapw input[type=range]::-moz-range-thumb { width:11px; height:11px; border:0; border-radius:50%; background:var(--yapw-accent); }
 .yapw input[type=range]:disabled { opacity:.8; cursor:default; }
 .yapw input[type=range]:disabled::-webkit-slider-thumb { width:0; }
+.yapw .yapw-playback-progress { --progress:0%; display:block; flex:1; width:100%; min-width:25px; height:5px; margin:7px 0; border:0; border-radius:8px; background:linear-gradient(to right,var(--yapw-accent) var(--progress),#ffffff28 var(--progress)); }
 .yapw .yapw-primary { background:var(--yapw-accent); color:#14200e; font-weight:650; border-color:var(--yapw-accent); }
 .yapw .yapw-primary:hover { background:#bcebA7; color:#14200e; border-color:#bceba7; }
 .yapw button.yapw-danger { color:#edb1a8; border-color:#de7a6c38; background:#de7a6c09; }
@@ -35,6 +36,7 @@
 .yapw-secondary-progress { display:flex; align-items:center; gap:12px; min-width:0; margin-top:5px; }
 .yapw-secondary-progress .yapw-timeline { flex:1; min-width:0; padding:0; }
 .yapw-secondary-progress .yapw-timeline input { margin:0 0 3px; height:3px; }
+.yapw-secondary-progress .yapw-playback-progress { margin:0 0 3px; height:3px; }
 .yapw-secondary-progress .yapw-times { font-size:8px; }
 .yapw-layer-volume { display:flex; flex:none; align-items:center; gap:5px; min-width:0; margin:0; font-size:9px; color:var(--yapw-muted); }
 .yapw-secondary-progress .yapw-layer-volume { width:110px; max-width:38%; }
@@ -54,8 +56,10 @@
 .yapw-mini-progress { display:flex; align-items:center; flex:none; gap:8px; width:100%; height:18px; margin-top:auto; }
 #yapw-mini .yapw-timeline { display:flex; align-items:center; flex:1; min-width:0; padding:0; }
 #yapw-mini .yapw-timeline>input { flex:1; min-width:25px; margin:0; height:3px; }
+#yapw-mini .yapw-timeline>.yapw-playback-progress { margin:0; height:3px; }
 #yapw-mini .yapw-secondary-progress .yapw-timeline { display:block; }
 #yapw-mini .yapw-secondary-progress .yapw-timeline>input { margin-bottom:3px; }
+#yapw-mini .yapw-secondary-progress .yapw-timeline>.yapw-playback-progress { margin-bottom:3px; }
 #yapw-mini .yapw-times { flex:none; gap:2px; font-size:9px; white-space:nowrap; }
 #yapw-mini .yapw-transport { gap:0; flex:none; }
 #yapw-mini button { width:20px; height:23px; min-height:23px; padding:3px; border:0; font-size:10px; border-radius:4px; }
@@ -205,6 +209,6 @@
 .yapw-form-error { padding:10px; background:#de7a6c12; color:#f0aaa0!important; border:1px solid #de7a6c30!important; border-radius:7px; font-size:12px; overflow-wrap:anywhere; }
 .yapw-dialog footer { display:flex; justify-content:flex-end; gap:10px; padding:17px 24px; border-top:1px solid var(--yapw-line); }
 .yapw-sidebar-button { width:100%; margin:5px 0; }
-@container yapw-mini (max-width:380px) { .yapw-mini-clock { display:none; } }
+@container yapw-mini (max-width:380px) { .yapw-mini-player:not(.is-listener) .yapw-mini-clock { display:none; } }
 @container yapw-library (max-width:560px) { .yapw-full-body { position:relative; } .yapw-detail-pane { position:absolute; inset:0 0 0 17%; width:83%; min-width:0; z-index:1; box-shadow:-15px 0 35px #0006; } .yapw-full-player .yapw-cover { display:none; } .yapw-full-player>.yapw-volume { max-width:55px; } }
 @media(prefers-reduced-motion:reduce) { .yapw * { transition:none!important; } }

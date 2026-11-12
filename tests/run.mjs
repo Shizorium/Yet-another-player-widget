@@ -195,7 +195,7 @@ await test("Both player views put independent secondary controls and a remembere
   for(const markup of [miniView(lib,ui),fullView(ui)]){
     assert.ok(markup.indexOf('data-playback-layer="0"')<markup.indexOf('data-playback-layer="1"'));assert.match(markup,/aria-label="Второй слой"/);assert.match(markup,/Пауза второго слоя/);assert.match(markup,/Следующий трек второго слоя/);assert.match(markup,/Остановить второй слой/);assert.match(markup,/data-layer-volume="1"[^>]*value="0.34"/);assert.match(markup,/Позиция: Второй слой/);
   }
-  game.user.isGM=false;const playerView=miniView(lib,ui);assert.doesNotMatch(playerView,/Пауза второго слоя/);assert.match(playerView,/data-layer-volume="1"[^>]*disabled/);game.user.isGM=true;await lib.stop();layerVolumes={};
+  game.user.isGM=false;const playerView=miniView(lib,ui);assert.doesNotMatch(playerView,/Пауза второго слоя/);assert.match(playerView,/data-local-layer-volume="1"/);assert.doesNotMatch(playerView,/data-layer-volume="1"/);game.user.isGM=true;await lib.stop();layerVolumes={};
 });
 
 const auditionSounds=[];
@@ -551,4 +551,5 @@ await test("HTTP helper requires its key, rejects unknown origins and isolates w
   } finally { await helper.close(); }
 });
 await (await import("./sync.mjs")).syncTests(test);
+await (await import("./player-view.mjs")).playerViewTests(test);
 console.log(`\n${passed} tests passed.`);

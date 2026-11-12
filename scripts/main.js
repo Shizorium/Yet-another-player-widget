@@ -4,7 +4,7 @@ import { Downloads } from "./downloads.js";
 import { miniView, fullView, currentPlaylistView, volumeView, icon } from "./view.js";
 import { TrackDrag } from "./drag.js";
 import { TrackPreview } from "./preview.js";
-import { PlaybackSync, installPlaybackSync, stampPlayback } from "./sync.js";
+import { PlaybackSync, installPlaybackSync, stampPlayback, localLayerVolume, soundDuration } from "./sync.js";
 
 let player;
 function report(error) { console.error(`${ID} |`, error); ui.notifications.error(error.message || String(error)); }
@@ -125,6 +125,11 @@ export class PlayerWidget {
         clearTimeout(this.layerVolumeTimers.get(slot));
         void this.perform(() => this.library.setVolume(slot,value));
       }
+      if(event.target.matches("[data-local-layer-volume]")) {
+        const slot = Number(event.target.dataset.localLayerVolume);
+        clearTimeout(this.layerVolumeTimers.get(`local-${slot}`));
+        void this.perform(()=>this.audioSync.setLocalVolume(slot,Number(event.target.value)));
+      }
       if (event.target.matches("[data-volume]")) { clearTimeout(this.volumeTimer); void this.perform(() => game.settings.set("core", "globalPlaylistVolume", Number(event.target.value))); }
     });
     root.addEventListener("input", event => {
@@ -141,6 +146,14 @@ export class PlayerWidget {
       }
     });
     root.addEventListener("input", event => {
+      if(event.target.matches("[data-local-layer-volume]")) {
+        const slot = Number(event.target.dataset.localLayerVolume), value = clamp(event.target.value,0,1);
+        root.querySelectorAll(`[data-local-layer-volume-value="${slot}"]`).forEach(el=>{el.textContent=`${Math.round(value*100)}%`;});
+        event.target.style.setProperty("--progress",`${value*100}%`);
+        clearTimeout(this.layerVolumeTimers.get(`local-${slot}`));
+        this.layerVolumeTimers.set(`local-${slot}`,setTimeout(()=>void this.perform(()=>this.audioSync.setLocalVolume(slot,value)),50));
+        return;
+      }
       if (!event.target.matches("[data-layer-volume]")) return;
       const slot = Number(event.target.dataset.layerVolume), value = clamp(event.target.value,0,1);
       root.querySelectorAll(`[data-layer-volume-value="${slot}"]`).forEach(el => { el.textContent = `${Math.round(value*100)}%`; });
@@ -163,7 +176,8 @@ export class PlayerWidget {
     if (this.preview.active && (!game.user.isGM || !game.playlists.get(this.preview.active.playlistId)?.sounds.has(this.preview.active.trackId))) void this.preview.stop().catch(report);
     const sharedPlaying = this.library.playing;
     if (this.playlistMenu && (!game.user.isGM || !this.library.playlists.some(p => p.id === this.menuPlaylistId))) this.closePlaylistMenu();
-    if (!this.currentPlaylist || (!game.user.isGM && !sharedPlaying)) this.closeMiniPlaylist(false);
+    if (!this.currentPlaylist || !game.user.isGM) this.closeMiniPlaylist(false);
+    if(!game.user.isGM) this.closeFull();
     const entries = this.library.layerEntries, extraHeight = entries.length * 72;
     if (extraHeight !== this.miniExtraHeight) {
       const baseHeight = clamp(parseFloat(this.mini.style.height) - this.miniExtraHeight,72,140);
@@ -192,8 +206,9 @@ export class PlayerWidget {
     for (const root of [this.mini,this.full,this.volumePopup].filter(Boolean)) {
       for (const scope of root.querySelectorAll("[data-playback-layer]")) {
         const sound = this.library.soundAt(Number(scope.dataset.playbackLayer));
-        const duration = sound?.sound?.duration ?? sound?.getFlag(ID,"duration");
-        const current = sound?.playing ? this.audioSync.position(sound) ?? sound.pausedTime ?? 0 : sound?.pausedTime ?? 0;
+        const duration = soundDuration(sound);
+        const position = sound?.playing ? this.audioSync.position(sound) ?? sound.pausedTime ?? 0 : sound?.pausedTime ?? 0;
+        const current = Number.isFinite(position) ? position : 0;
         for (const input of scope.querySelectorAll("[data-seek]")) {
           if (!(this.interacting && document.activeElement === input) && this.seekingInput !== input) input.value = clamp(current,0,duration || 1);
           input.max = Number.isFinite(duration) ? duration : 1;
@@ -203,11 +218,23 @@ export class PlayerWidget {
         scope.querySelectorAll("[data-elapsed]").forEach(el => { if (!scope.contains(this.seekingInput)) el.textContent = time(current); });
         scope.querySelectorAll("[data-duration]").forEach(el => { el.textContent = time(duration); });
         scope.querySelectorAll("[data-seek]").forEach(el => { el.title = `${time(current)} / ${time(duration)}`; });
+        scope.querySelectorAll("[data-playback-progress]").forEach(el=>{
+          const value = clamp(current,0,duration || 1);
+          el.style.setProperty("--progress",`${duration ? value/duration*100 : 0}%`);
+          el.setAttribute("aria-valuemax",String(duration ?? 1));el.setAttribute("aria-valuenow",String(value));
+          el.setAttribute("aria-valuetext",`${time(current)} / ${time(duration)}`);el.title=`${time(current)} / ${time(duration)}`;
+        });
       }
       root.querySelectorAll("[data-layer-volume]").forEach(input => {
         if (document.activeElement !== input) input.value = this.library.volumeFor(Number(input.dataset.layerVolume));
         input.style.setProperty("--progress",`${Number(input.value)*100}%`);
         root.querySelectorAll(`[data-layer-volume-value="${input.dataset.layerVolume}"]`).forEach(el => { el.textContent = `${Math.round(Number(input.value)*100)}%`; });
+      });
+      root.querySelectorAll("[data-local-layer-volume]").forEach(input=>{
+        const slot = Number(input.dataset.localLayerVolume);
+        if(document.activeElement !== input) input.value = localLayerVolume(slot);
+        input.style.setProperty("--progress",`${Number(input.value)*100}%`);
+        root.querySelectorAll(`[data-local-layer-volume-value="${slot}"]`).forEach(el=>{el.textContent=`${Math.round(Number(input.value)*100)}%`;});
       });
       root.querySelectorAll("[data-volume]").forEach(input => { if (document.activeElement !== input) input.value = game.settings.get("core","globalPlaylistVolume") ?? 1; input.style.setProperty("--progress",`${Number(input.value)*100}%`); });
       root.querySelectorAll("[data-volume-value]").forEach(el => { el.textContent = `${Math.round(Number(root.querySelector("[data-volume]")?.value ?? 1) * 100)}%`; });
@@ -221,6 +248,7 @@ export class PlayerWidget {
     return this.miniBrowseId ? this.library.playlists.find(p => p.id === this.miniBrowseId) : this.currentPlaylist;
   }
   refreshMiniPlaylist() {
+    if(!game.user.isGM) {this.closeMiniPlaylist(false);return;}
     if (!this.miniPlaylistOpen || !this.currentPlaylist) return;
     if (this.miniBrowseId && !this.popupPlaylist) { this.miniBrowseId = null; this.miniBrowseAll = true; }
     if (!this.miniPlaylist) {
@@ -324,7 +352,7 @@ export class PlayerWidget {
     return dialog;
   }
   openFull() {
-    if (!game.user.isGM && !this.library.current?.playing) return;
+    if (!game.user.isGM) return;
     if (!this.full) {
       this.previousFocus = document.activeElement;
       this.full = document.createElement("section"); this.full.id = "yapw-full"; this.full.className = "yapw";
@@ -410,7 +438,8 @@ export class PlayerWidget {
   }
   async settings() {
     const layout = game.settings.get(ID,"layout"), helper = game.settings.get(ID,"helper");
-    const dialog = await this.form("Настройки плеера", `<label>Ширина виджета, пиксели<input name="width" type="number" min="360" max="800" value="${Math.round(this.mini.getBoundingClientRect().width || layout.width || 460)}" required></label><label>Высота виджета, пиксели<input name="height" type="number" min="72" max="140" value="${Math.round((this.mini.getBoundingClientRect().height - this.miniExtraHeight) || 78)}" required></label><label>Масштаб текста и кнопок<select name="scale">${[0.8,1,1.2].map(n => `<option value="${n}" ${(layout.scale ?? 1) === n ? "selected" : ""}>${Math.round(n*100)}%</option>`).join("")}</select></label><p class="yapw-help">Перетаскивайте плеер за обложку или название; двойной щелчок по обложке или названию открывает библиотеку справа. Кнопка со стрелкой внизу раскрывает текущий плейлист; громкость открывается при наведении на значок динамика. Оба окна растягиваются за правый нижний угол; библиотека перемещается за заголовок. Размеры сохраняются отдельно у каждого участника.</p>${game.user.isGM ? `<hr><h3>Загрузки YouTube</h3><label>Адрес помощника<input name="url" type="url" value="${e(helper.url)}" placeholder="http://127.0.0.1:32123" required></label><label>Ключ подключения<input name="token" type="password" value="${e(helper.token)}" autocomplete="off"></label><p class="yapw-help">Запустите <strong>helper/Start-Helper.cmd</strong> в папке модуля на компьютере сервера Foundry, затем скопируйте ключ из его окна. Ключ сохраняется только в вашем браузере. Помощником пользуется активный ГМ. Для адреса Foundry, отличающегося от localhost:30000, задайте YAPW_ORIGINS при запуске.</p><button type="button" data-check>Проверить подключение</button><p data-check-result class="yapw-help"></p>` : ""}`, async data => {
+    const help = game.user.isGM ? "Перетаскивайте плеер за обложку или название; двойной щелчок открывает библиотеку справа. Нижняя стрелка раскрывает текущий плейлист. Размеры окон сохраняются отдельно у каждого участника." : "Перетаскивайте плеер за обложку или название, изменяйте размер за правый нижний угол. Динамик открывает личную громкость основного слоя и всей музыки; громкость второго слоя находится рядом с его прогрессом. Изменения громкости слышны только вам.";
+    const dialog = await this.form("Настройки плеера", `<label>Ширина виджета, пиксели<input name="width" type="number" min="360" max="800" value="${Math.round(this.mini.getBoundingClientRect().width || layout.width || 460)}" required></label><label>Высота виджета, пиксели<input name="height" type="number" min="72" max="140" value="${Math.round((this.mini.getBoundingClientRect().height - this.miniExtraHeight) || 78)}" required></label><label>Масштаб текста и кнопок<select name="scale">${[0.8,1,1.2].map(n => `<option value="${n}" ${(layout.scale ?? 1) === n ? "selected" : ""}>${Math.round(n*100)}%</option>`).join("")}</select></label><p class="yapw-help">${help}</p>${game.user.isGM ? `<hr><h3>Загрузки YouTube</h3><label>Адрес помощника<input name="url" type="url" value="${e(helper.url)}" placeholder="http://127.0.0.1:32123" required></label><label>Ключ подключения<input name="token" type="password" value="${e(helper.token)}" autocomplete="off"></label><p class="yapw-help">Запустите <strong>helper/Start-Helper.cmd</strong> в папке модуля на компьютере сервера Foundry, затем скопируйте ключ из его окна. Ключ сохраняется только в вашем браузере. Помощником пользуется активный ГМ. Для адреса Foundry, отличающегося от localhost:30000, задайте YAPW_ORIGINS при запуске.</p><button type="button" data-check>Проверить подключение</button><p data-check-result class="yapw-help"></p>` : ""}`, async data => {
       const next = { ...game.settings.get(ID,"layout"), version: 3, width: clamp(data.get("width"),360,800), height: clamp(data.get("height"),72,140), scale: clamp(data.get("scale"),0.8,1.2) };
       await game.settings.set(ID,"layout",next);
       this.mini.style.width = `${next.width}px`; this.mini.style.height = `${next.height + this.miniExtraHeight}px`; this.mini.style.setProperty("--yapw-scale",next.scale); this.keepOnScreen();
@@ -482,6 +511,7 @@ export class PlayerWidget {
     const slot = Number(element.closest("[data-playback-layer]")?.dataset.playbackLayer ?? 0);
     this.closePlaylistMenu();
     if (action === "sync-audio") { if(this.audioSync.manualBusy)return;await this.audioSync.resync(); ui.notifications.info("Звук синхронизирован на этом компьютере."); return; }
+    if(!game.user.isGM && ["current-playlist","mini-all-playlists","mini-select-playlist","select","deselect"].includes(action)) return;
     if (action === "library") { this.openFull(); return; }
     if (action === "close") { this.closeFull(); return; }
     if (action === "settings") return this.settings();
@@ -598,6 +628,7 @@ Hooks.once("init", () => {
   game.settings.register(ID,"helper",{scope:"client",config:false,type:Object,default:{url:"http://127.0.0.1:32123",token:""}});
   game.settings.register(ID,"selection",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
   game.settings.register(ID,"layerVolumes",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
+  game.settings.register(ID,"localLayerVolumes",{scope:"client",config:false,type:Object,default:{},onChange:()=>{player?.audioSync.applyVolumes();player?.updateTime();}});
   game.keybindings.register(ID,"library",{name:"Открыть музыкальную библиотеку",editable:[{key:"KeyM",modifiers:["Control","Alt"]}],onDown:()=>{ player?.full ? player.closeFull() : player?.openFull(); return true; }});
 });
 Hooks.once("ready", async () => {

@@ -1,4 +1,5 @@
 import { ID, STATUS, escapeHTML as e, time, clamp, isDownloadActive, isDownloadFinished, isInDownloadQueue } from "./model.js";
+import { localLayerVolume, soundDuration } from "./sync.js";
 
 export const icon = name => `<i class="fa-solid fa-${name}" aria-hidden="true"></i>`;
 export const button = (action, label, symbol, extra = "") => `<button type="button" data-action="${action}" title="${e(label)}" aria-label="${e(label)}" ${extra}>${icon(symbol)}</button>`;
@@ -9,27 +10,32 @@ export function transport(sound, gm, slot = 0) {
   const target = slot ? ` ${layerName(slot).toLocaleLowerCase()}` : "";
   return `<div class="yapw-transport">${gm ? button("previous", `Предыдущий трек${suffix}`, "backward-step") + button("toggle", sound?.playing ? `Пауза${suffix}` : `Воспроизвести${target}`, sound?.playing ? "pause" : "play", 'class="yapw-play"') + button("next", `Следующий трек${suffix}`, "forward-step") + button("stop", `Остановить${target}`, "stop") : `<span class="yapw-listening">${icon("headphones")} ${sound?.playing ? "Сейчас играет" : "Пауза"}</span>`}</div>`;
 }
+export function progressView(sound, gm, slot = 0) {
+  const duration = soundDuration(sound), label = slot ? `Позиция: ${layerName(slot)}` : "Позиция воспроизведения";
+  return gm ? `<input type="range" data-seek aria-label="${label}" min="0" max="${duration ?? 1}" value="0" step="0.1" ${duration ? "" : "disabled"}>`
+    : `<div class="yapw-playback-progress" data-playback-progress role="progressbar" aria-label="${label}" aria-valuemin="0" aria-valuemax="${duration ?? 1}" aria-valuenow="0"></div>`;
+}
 export function timeline(sound, gm, slot = 0) {
-  const duration = sound?.sound?.duration ?? sound?.getFlag(ID, "duration");
-  return `<div class="yapw-timeline"><input type="range" data-seek aria-label="${slot ? `Позиция: ${layerName(slot)}` : "Позиция воспроизведения"}" min="0" max="${Number.isFinite(duration) ? duration : 1}" value="0" step="0.1" ${!gm || !duration ? "disabled" : ""}><div class="yapw-times"><span data-elapsed>0:00</span><span data-duration>${time(duration)}</span></div></div>`;
+  return `<div class="yapw-timeline">${progressView(sound,gm,slot)}<div class="yapw-times"><span data-elapsed>0:00</span><span data-duration>${time(soundDuration(sound))}</span></div></div>`;
 }
 export function layerVolumeView(library, slot = 0) {
-  const label = slot === 0 ? "Громкость основного слоя" : slot === 1 ? "Громкость второго слоя" : `Громкость слоя ${slot + 1}`;
-  return `<label class="yapw-layer-volume" title="${label}">${icon("volume-low")}<input data-layer-volume="${slot}" aria-label="${label}" type="range" min="0" max="1" step="0.01" value="${library.volumeFor(slot)}" ${game.user.isGM ? "" : "disabled"}><output data-layer-volume-value="${slot}">${Math.round(library.volumeFor(slot) * 100)}%</output></label>`;
+  const gm = game.user.isGM, label = `${gm ? "Громкость" : "Личная громкость"} ${slot === 0 ? "основного слоя" : slot === 1 ? "второго слоя" : `слоя ${slot + 1}`}`;
+  const value = gm ? library.volumeFor(slot) : localLayerVolume(slot), attribute = gm ? "layer" : "local-layer";
+  return `<label class="yapw-layer-volume" title="${label}">${icon("volume-low")}<input data-${attribute}-volume="${slot}" aria-label="${label}" type="range" min="0" max="1" step="0.01" value="${value}"><output data-${attribute}-volume-value="${slot}">${Math.round(value * 100)}%</output></label>`;
 }
 export function layerView(library, { slot, sound }) {
   return `<section class="yapw-layer-player" data-playback-layer="${slot}" aria-label="${layerName(slot)}"><span class="yapw-layer-caption">${icon("layer-group")} ${layerName(slot)}</span><div class="yapw-layer-line">${cover(sound.getFlag(ID,"cover"))}<strong class="yapw-mini-title" title="${e(sound.name)}">${e(sound.name)}</strong>${transport(sound,game.user.isGM,slot)}</div><div class="yapw-secondary-progress">${timeline(sound,game.user.isGM,slot)}${layerVolumeView(library,slot)}</div></section>`;
 }
 export function miniView(library, ui) {
   const s = library.current, gm = game.user.isGM;
-  const duration = s?.sound?.duration ?? s?.getFlag(ID, "duration");
-  return `<div class="yapw-mini-player"><section class="yapw-primary-playback" data-playback-layer="0"><div class="yapw-mini-line" data-drag>
+  const duration = soundDuration(s);
+  return `<div class="yapw-mini-player ${gm ? "" : "is-listener"}"><section class="yapw-primary-playback" data-playback-layer="0"><div class="yapw-mini-line" data-drag>
     ${cover(s?.getFlag(ID, "cover"))}<strong class="yapw-mini-title" title="${e(s?.name || "Двойной щелчок — открыть библиотеку")}" data-now-name>${e(s?.name || "Выберите музыку")}</strong>
     <span class="yapw-mini-clock"><span data-elapsed>0:00</span><span>/</span><span data-duration>${time(duration)}</span></span>${gm ? transport(s, true) : ""}
-    ${button("settings", "Размер и настройки", "sliders")}${button("library", "Открыть библиотеку", "angle-right", 'class="yapw-open-library"')}
-    </div><div class="yapw-mini-progress"><div class="yapw-timeline"><input type="range" data-seek aria-label="Позиция воспроизведения" min="0" max="${Number.isFinite(duration) ? duration : 1}" value="0" step="0.1" ${!gm || !duration ? "disabled" : ""}></div>
+    ${button("settings", "Размер и настройки", "sliders")}${gm ? button("library", "Открыть библиотеку", "angle-right", 'class="yapw-open-library"') : ""}
+    </div><div class="yapw-mini-progress"><div class="yapw-timeline">${progressView(s,gm)}</div>
     ${button("sync-audio", ui?.audioSync?.status.message || "Синхронизировать звук с ведущим на этом компьютере", "arrows-rotate", `class="yapw-sync-audio ${ui?.audioSync?.status.error ? "has-error" : ""}" aria-busy="${Boolean(ui?.audioSync?.status.busy)}" ${ui?.audioSync?.manualBusy ? "disabled" : ""}`)}${button("volume", "Громкость", "volume-low", 'data-volume-trigger aria-haspopup="dialog"')}
-    </div></section>${library.layerEntries.map(entry => layerView(library,entry)).join("")}<button type="button" class="yapw-current-toggle" data-action="current-playlist" title="${ui?.miniPlaylistOpen ? "Свернуть текущий плейлист" : "Открыть текущий плейлист"}" aria-label="Текущий плейлист" aria-expanded="${Boolean(ui?.miniPlaylistOpen)}" ${ui?.currentPlaylist ? "" : "disabled"}>${icon(ui?.miniPlaylistOpen ? "angle-up" : "angle-down")}</button></div><span class="yapw-resize" aria-hidden="true"></span>`;
+    </div></section>${library.layerEntries.map(entry => layerView(library,entry)).join("")}${gm ? `<button type="button" class="yapw-current-toggle" data-action="current-playlist" title="${ui?.miniPlaylistOpen ? "Свернуть текущий плейлист" : "Открыть текущий плейлист"}" aria-label="Текущий плейлист" aria-expanded="${Boolean(ui?.miniPlaylistOpen)}" ${ui?.currentPlaylist ? "" : "disabled"}>${icon(ui?.miniPlaylistOpen ? "angle-up" : "angle-down")}</button>` : ""}</div><span class="yapw-resize" aria-hidden="true"></span>`;
 }
 function trackRow(t, p, ui, queue = false, compact = false) {
   const playing = ui.library.current?.id === t.id && ui.library.current?.parent.id === p.id;
@@ -44,6 +50,7 @@ function trackRow(t, p, ui, queue = false, compact = false) {
     <span class="yapw-track-time">${time(t.duration)}</span>${gm ? `<div class="yapw-row-actions">${isDownloadActive(t) ? button("cancel-download", "Отменить загрузку", "ban", 'class="yapw-danger"') : ""}${["error", "cancelled"].includes(t.status) ? button("retry", t.status === "cancelled" ? "Возобновить загрузку" : "Повторить загрузку", "rotate-right") : ""}${!compact && !queue ? button("edit-track", "Изменить трек или перенести в другой плейлист", "pen") : ""}${ready ? button("preview", previewing ? "Остановить предпрослушивание" : "Предпрослушать только ГМу с 30–50% трека", "headphones", `aria-pressed="${previewing}"`) + button("add-layer", "Добавить к играющей музыке", "layer-group", sound?.playing ? "disabled" : "") : ""}${!compact ? button("remove-track", "Убрать из плейлиста", "xmark") : ""}</div>` : ""}</article>`;
 }
 export function currentPlaylistView(ui) {
+  if(!game.user.isGM) return "";
   if (ui.miniBrowseAll) return `<div class="yapw-scroll yapw-mini-playlists" aria-label="Все плейлисты">${ui.library.playlists.map(p => `<button type="button" class="yapw-mini-playlist-item" data-action="mini-select-playlist" data-playlist="${p.id}" title="${e(p.name)}">${e(p.name)}</button>`).join("") || '<div class="yapw-empty">Плейлистов пока нет</div>'}</div>`;
   const p = ui.popupPlaylist ?? ui.currentPlaylist;
   if (!p) return "";
@@ -51,9 +58,11 @@ export function currentPlaylistView(ui) {
 }
 export function volumeView(library) {
   const volume = game.settings.get("core", "globalPlaylistVolume") ?? 1;
-  return `${game.user.isGM && library ? `<label>Основной слой <output data-layer-volume-value="0">${Math.round(library.volumeFor(0)*100)}%</output><input data-layer-volume="0" aria-label="Громкость основного слоя" type="range" min="0" max="1" step="0.01" value="${library.volumeFor(0)}"></label>` : ""}<label>Вся музыка <output data-volume-value>${Math.round(volume * 100)}%</output><input type="range" data-volume aria-label="Личная громкость всей музыки" min="0" max="1" step="0.01" value="${volume}"></label>`;
+  const gm = game.user.isGM, value = gm ? library?.volumeFor(0) ?? 0.8 : localLayerVolume(0), attribute = gm ? "layer" : "local-layer";
+  return `<label>Основной слой <output data-${attribute}-volume-value="0">${Math.round(value*100)}%</output><input data-${attribute}-volume="0" aria-label="${gm ? "Громкость" : "Личная громкость"} основного слоя" type="range" min="0" max="1" step="0.01" value="${value}"></label><label>Вся музыка <output data-volume-value>${Math.round(volume * 100)}%</output><input type="range" data-volume aria-label="Личная громкость всей музыки" min="0" max="1" step="0.01" value="${volume}"></label>`;
 }
 export function fullView(ui) {
+  if(!game.user.isGM) return "";
   const gm = game.user.isGM, playlists = ui.library.playlists, s = ui.library.current;
   const selected = playlists.find(p => p.id === ui.selected);
   const query = ui.query.trim().toLocaleLowerCase();

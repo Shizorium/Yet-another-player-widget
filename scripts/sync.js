@@ -2,6 +2,13 @@ import { ID } from "./model.js";
 
 export const START_DELAY_MS = 600;
 export function serverNow() { const now = game.time?.serverTime; return Number.isFinite(now) ? now : Date.now(); }
+export function soundDuration(doc) {
+  return [doc?.sound?.duration,doc?.getFlag(ID,"duration")].find(value=>Number.isFinite(value)&&value>0);
+}
+export function localLayerVolume(slot = 0) {
+  const value = game.settings.get(ID,"localLayerVolumes")?.[slot];
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : 1;
+}
 export function stampPlayback(sound, changes, now = serverNow()) {
   if (!sound?.parent?.getFlag(ID,"managed") || changes.playing !== true) return;
   if (changes.flags?.[ID]?.clock) return;
@@ -35,6 +42,26 @@ export class PlaybackSync {
     Object.assign(this,{library,changed,now,timeout,tolerance}); this.states = new Map(); this.clocks = new Map(); this.clockRetryAt = new Map(); this.manualBusy = false;
   }
   key(doc) { return `${doc.parent.id}:${doc.id}`; }
+  effectiveVolume(doc) {
+    const slot = this.library.layerEntries?.find(entry=>entry.sound === doc)?.slot ?? 0;
+    return (Number.isFinite(doc.volume) ? doc.volume : 0.8) * (game.user.isGM ? 1 : localLayerVolume(slot));
+  }
+  applyVolumes() {
+    for(const state of this.states.values()) if(this.live(state) && state.sound?.loaded) this.applyVolume(state);
+  }
+  applyVolume(state, fade = 0) {
+    const volume = this.effectiveVolume(state.doc), audio = state.sound;
+    audio.volume = volume;
+    if(!game.user.isGM && audio.playing && typeof audio.fade === "function") void Promise.resolve(audio.fade(volume,{duration:fade,from:fade ? 0 : volume})).catch(()=>{});
+  }
+  setLocalVolume(slot, value) {
+    if(!Number.isInteger(slot) || slot < 0 || !Number.isFinite(value)) return Promise.reject(new Error("Некорректная громкость слоя."));
+    const task = (this.volumeWrite ?? Promise.resolve()).catch(()=>{}).then(async()=>{
+      await game.settings.set(ID,"localLayerVolumes",{...game.settings.get(ID,"localLayerVolumes"),[slot]:Math.max(0,Math.min(1,value))});
+      this.applyVolumes();this.changed();
+    });
+    this.volumeWrite = task;return task;
+  }
   clock(doc) {
     const clock = doc.getFlag(ID,"clock");
     return clock && Number.isFinite(clock.at) && Number.isFinite(clock.offset) && clock.offset >= 0 && clock.path === doc.path ? clock : null;
@@ -94,7 +121,7 @@ export class PlaybackSync {
     if (state.sound?.playing) {
       const target = playbackTarget(clock,this.now(),state.sound.duration,doc.repeat);
       if (target.ended) return Promise.resolve(); // Native end event advances the playlist.
-      state.sound.loop = Boolean(doc.repeat); state.sound.volume = doc.volume;
+      state.sound.loop = Boolean(doc.repeat); state.sound.volume = this.effectiveVolume(doc);
       const current = this.position(doc), duration = state.sound.duration;
       let drift = Math.abs(current - target.offset);
       if (doc.repeat && Number.isFinite(duration)) drift = Math.min(drift,Math.abs(duration-drift));
@@ -120,7 +147,7 @@ export class PlaybackSync {
         ++state.attempts; state.phase="loading"; state.error=""; this.changed();
         const audio = state.sound = new foundry.audio.Sound(state.path,{context:state.doc.context ?? game.audio.music});
         state.doc.sound = audio;
-        audio.addEventListener("play",()=>{ if(this.live(state)) void state.doc._onStart?.(); });
+        audio.addEventListener("play",()=>{ if(this.live(state)) {void state.doc._onStart?.();if(!game.user.isGM)this.applyVolume(state,state.doc.fadeDuration ?? 0);} });
         audio.addEventListener("end",()=>{ if(this.live(state)) {state.ended=true;void state.doc._onEnd?.();} });
         audio.addEventListener("stop",()=>{ if(this.live(state)) void state.doc._onStop?.(); });
         const loading = audio.load();
@@ -136,7 +163,7 @@ export class PlaybackSync {
       if (!valid()) return;
       const target = playbackTarget(clock,this.now(),state.sound.duration,state.doc.repeat);
       if (target.ended) { state.ended=true; if(game.user.isGM&&game.users.activeGM?.id===game.user.id) void state.doc._onEnd?.(); return; }
-      await bounded(state.sound.play({offset:target.offset,delay:target.delay,loop:Boolean(state.doc.repeat),volume:state.doc.volume,fade:0}),this.timeout,signal);
+      await bounded(state.sound.play({offset:target.offset,delay:target.delay,loop:Boolean(state.doc.repeat),volume:this.effectiveVolume(state.doc),fade:0}),this.timeout,signal);
       if (valid()) { state.phase="playing"; state.error=""; }
     } catch(error) { if(valid()) this.fail(state,error); }
   }
