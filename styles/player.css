@@ -168,7 +168,7 @@
 .yapw-playlist-card>strong { font-size:11px; line-height:1.3; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .yapw-library-footer { display:flex; flex:none; flex-wrap:wrap; gap:1px 9px; padding:6px 0; border-top:1px solid var(--yapw-line); }
 .yapw-library-footer button { color:var(--yapw-muted); min-height:20px; font-size:9px; padding:3px 0; gap:4px; border:0; }
-.yapw-detail-pane { display:flex; flex-direction:column; width:48%; min-width:295px; border-left:1px solid var(--yapw-line); background:#191f28; }
+.yapw-detail-pane { display:flex; flex-direction:column; position:relative; width:48%; min-width:295px; border-left:1px solid var(--yapw-line); background:#191f28; }
 .yapw-detail-pane>header { position:relative; padding:12px 12px 9px; }
 .yapw-detail-pane>header .yapw-eyebrow { font-size:8px; margin-bottom:5px; }
 .yapw-detail-pane>header>button { position:absolute; right:5px; top:7px; min-height:23px; padding:4px 7px; border:0; color:var(--yapw-muted); }
@@ -178,6 +178,14 @@
 .yapw-detail-toolbar>button { padding:5px 7px; min-height:27px; font-size:10px; }
 .yapw-detail-toolbar .yapw-primary { flex:1; }
 .yapw-tracks { flex:1; padding:4px 5px 10px; }
+.yapw-detail-pane>.yapw-tracks { padding-bottom:43px; }
+.yapw-mini-playlist>.yapw-tracks { padding-bottom:35px; }
+.yapw-track-sort { display:inline-flex; position:absolute; right:10px; bottom:8px; z-index:2; gap:4px; width:max-content; margin:0; padding:0; border:0; background:transparent; }
+.yapw .yapw-track-sort>button { width:28px; height:27px; min-height:27px; padding:5px; font-size:11px; color:var(--yapw-muted); background:var(--yapw-panel); }
+.yapw .yapw-track-sort>button:hover { background:var(--yapw-raised); }
+.yapw-mini-playlist .yapw-track-sort { right:7px; bottom:5px; gap:3px; }
+.yapw-mini-playlist .yapw-track-sort>button { width:23px; height:22px; min-height:22px; padding:4px; font-size:10px; }
+.yapw .yapw-shuffle-play[aria-pressed=true] { color:var(--yapw-accent); background:#a9df9115; border-color:#a9df9140; }
 .yapw-track { display:flex; align-items:center; gap:7px; padding:7px 5px; border-bottom:1px solid #ffffff08; border-radius:4px; min-width:0; }
 .yapw-track:hover { background:#ffffff03; }
 .yapw-track.is-current { background:#a9df910a; }
@@ -211,6 +219,13 @@
 .yapw-queue-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; padding:0 0 9px; gap:6px; color:var(--yapw-muted); font-size:11px; }
 .yapw-queue-heading button { font-size:10px; min-height:25px; padding:5px 7px; }
 .yapw-queue-actions { display:flex; flex-wrap:wrap; gap:5px; }
+.yapw-cookies { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:9px; padding:10px; margin-bottom:12px; border:1px solid var(--yapw-line); border-radius:6px; background:var(--yapw-panel); }
+.yapw-cookies>div:first-child { flex:1 1 200px; min-width:0; }
+.yapw-cookies strong { display:block; font-size:11px; }
+.yapw-cookies span,.yapw-cookies p { display:block; margin-top:3px; font-size:10px; color:var(--yapw-muted); }
+.yapw-cookie-actions { display:flex; flex-wrap:wrap; gap:5px; }
+.yapw-cookie-actions>button { min-height:25px; padding:5px 7px; font-size:10px; }
+.yapw-cookie-path { display:inline-block; max-width:100%; margin:5px 0; overflow-wrap:anywhere; }
 .yapw-playlist-queue { flex:none; margin:0; padding:6px 10px; border-bottom:1px solid var(--yapw-line); font-size:10px; }
 .yapw-empty { display:flex; flex-direction:column; justify-content:center; align-items:center; gap:8px; padding:24px 12px; color:var(--yapw-muted); text-align:center; }
 .yapw-empty>i { font-size:33px; color:#a9df9166; margin-bottom:8px; }

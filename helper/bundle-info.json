@@ -1,6 +1,6 @@
 {
-  "version": "1.7.0",
-  "buildId": "946756c5e08d0324cde6",
+  "version": "1.9.0",
+  "buildId": "d671f318b07f6db5b716",
   "platform": "win32",
   "arch": "x64",
   "files": [
@@ -31,14 +31,14 @@
     {
       "path": "helper/server.mjs",
       "asset": "helper_server.mjs.gz",
-      "sha256": "630d087aac3519a9414aecf9b1aeceb3bbc20ce35eff316fcc1c5f9ee61e27ec",
-      "bytes": 18569
+      "sha256": "7ec40b2d341e15a634c85d76c392b57923d34e3fca6bb63876ebc2ee45d8a586",
+      "bytes": 24264
     },
     {
       "path": "scripts/model.js",
       "asset": "scripts_model.js.gz",
-      "sha256": "617d8aac1f504a49fb458304874344b876fb5a25ccef8603288ef31fe246dd68",
-      "bytes": 4801
+      "sha256": "9150317715a99cf634999982ab317790b4fa71f0a2644d58ffa5e35142bfb3f7",
+      "bytes": 6452
     },
     {
       "path": "licenses/FFmpeg-LICENSE.txt",
@@ -83,7 +83,7 @@
       "bytes": 17
     }
   ],
-  "executableSha256": "ac3a26d57e3b2994554261c7f86d4b11dc7d48703c5754644e87717e675e995c",
+  "executableSha256": "c383c58df1bad6fa63d3ac847c540a3aee5a65030d80ca526e3cc5febda3865a",
   "imports": [
     "CRYPT32.dll",
     "WS2_32.dll",

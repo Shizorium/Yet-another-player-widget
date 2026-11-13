@@ -10,6 +10,7 @@ import { peImports } from "../tests/pe-imports.mjs";
 
 const helper = path.dirname(fileURLToPath(import.meta.url)), moduleDir = path.dirname(helper), build = path.join(helper,".build");
 const arg = name => { const i = process.argv.indexOf(name); return i < 0 ? null : process.argv[i + 1]; };
+const outputDir = path.resolve(arg("--output-dir") || helper);
 const node = path.resolve(arg("--node") || path.join(build,"bin","node.exe"));
 const ffmpeg = arg("--ffmpeg"), ffprobe = arg("--ffprobe");
 if (!ffmpeg || !ffprobe) throw new Error("Укажите --ffmpeg и --ffprobe: абсолютные пути к статическим сборкам Windows x64.");
@@ -46,7 +47,8 @@ const blob = path.join(build,"helper.blob"), configFile = path.join(build,"sea-c
 await fs.writeFile(configFile,JSON.stringify({main:path.join(helper,"launcher.cjs"),output:blob,disableExperimentalSEAWarning:true,useCodeCache:false,useSnapshot:false,assets},null,2));
 function run(args) { const result=spawnSync(node,args,{stdio:"inherit",windowsHide:true});if(result.error)throw result.error;if(result.status)throw new Error(`Ошибка сборки (${result.status}).`); }
 run(["--experimental-sea-config",configFile]);
-const executable = path.join(helper,"Helper.exe"), binary = await fs.readFile(node);
+await fs.mkdir(outputDir,{recursive:true});
+const executable = path.join(outputDir,"Helper.exe"), binary = await fs.readFile(node);
 // The generated program has its own identity; discard the original Node signature.
 const pe=binary.readUInt32LE(60),optional=pe+24,directories=optional+(binary.readUInt16LE(optional)===0x20b?112:96),certificate=directories+4*8;
 const certificateOffset=binary.readUInt32LE(certificate),certificateSize=binary.readUInt32LE(certificate+4);
@@ -57,5 +59,5 @@ const imports=await peImports(executable);
 if(imports.some(name=>/vcruntime|msvcp|libstdc|libgcc/i.test(name)))throw new Error("EXE требует внешние DLL. Используйте автономную сборку Node.js.");
 const executableHash=sha256(await fs.readFile(executable));
 await fs.writeFile(executable+".sha256",`${executableHash}  Helper.exe\n`);
-await fs.writeFile(path.join(helper,"bundle-info.json"),JSON.stringify({...manifest,executableSha256:executableHash,imports},null,2));
+await fs.writeFile(path.join(outputDir,"bundle-info.json"),JSON.stringify({...manifest,executableSha256:executableHash,imports},null,2));
 console.log(`Готово: ${executable}\nВерсия ${metadata.version}; ${Math.round((await fs.stat(executable)).size/1024/1024)} МБ; SHA256 ${executableHash}`);

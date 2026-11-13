@@ -10,9 +10,10 @@ import {fileURLToPath} from "node:url";
 import {peImports} from "./pe-imports.mjs";
 
 const moduleRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");
+const helperExe=process.argv[2]?path.resolve(process.argv[2]):path.join(moduleRoot,"helper","Helper.exe");
 const fixture=await fs.mkdtemp(path.join(os.tmpdir(),"yapw-standalone-"));
 const exeDir=path.join(fixture,"Чистый ПК с пробелами"),runtimeRoot=path.join(fixture,"private-runtime"),state=path.join(fixture,"private-state");
-await fs.mkdir(exeDir);const exe=path.join(exeDir,"Helper.exe");await fs.copyFile(path.join(moduleRoot,"helper","Helper.exe"),exe);
+await fs.mkdir(exeDir);const exe=path.join(exeDir,"Helper.exe");await fs.copyFile(helperExe,exe);
 const env={...process.env,PATH:path.join(process.env.SystemRoot||"C:\\Windows","System32"),YAPW_RUNTIME_DIR:runtimeRoot,YAPW_STATE_DIR:state,YAPW_PORT:"0"};
 for(const key of ["NODE_OPTIONS","NODE_PATH","YAPW_NODE","YAPW_YTDLP","YAPW_FFMPEG","YAPW_COOKIES","YAPW_MODULE_DIR"])delete env[key];
 function run(command,args,options={}){return new Promise((resolve,reject)=>{
@@ -59,6 +60,14 @@ try{
   const token=(await fs.readFile(path.join(state,"token.txt"),"utf8")).trim();
   assert.equal((await request(port,"/health",{token})).status,200);assert.equal((await request(port,"/health")).status,401);
   assert.equal((await request(port,"/health",{token,origin:"https://invalid.test"})).status,403);
+  const cookieFixture="# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2000000000\tTEST_SID\tSTANDALONE_TEST_COOKIE\n";
+  assert.equal((await request(port,"/cookies",{token})).body.configured,false);
+  const savedCookies=await request(port,"/cookies",{token,method:"POST",body:{text:cookieFixture}});
+  assert.equal(savedCookies.status,200);assert.equal(savedCookies.body.file,path.join(state,"cookies.txt"));assert.equal(savedCookies.body.configured,true);
+  assert.doesNotMatch(JSON.stringify(savedCookies.body),/STANDALONE_TEST_COOKIE/);
+  assert.match(await fs.readFile(path.join(state,"cookies.txt"),"utf8"),/STANDALONE_TEST_COOKIE/);
+  assert.equal((await request(port,"/cookies",{token,method:"POST",body:{clear:true}})).body.configured,false);
+  console.log("PASS Standalone EXE supports authenticated cookie upload/status/removal outside public module storage without returning values");
   await request(port,"/jobs",{token,method:"POST",body:{world:"portable",key:"track:cached",kind:"download",url:`https://youtu.be/${video}`}});
   let job;await until(async()=>{job=(await request(port,"/jobs?world=portable",{token})).body.jobs[0];return job?.status==="ready";});
   assert.equal(job.result.path,`modules/yet-another-player-widget/storage/youtube/${video}/track.mp3`);
@@ -69,7 +78,7 @@ try{
   const duplicate=await run(exe,["--module-dir",module,"--no-pause"],{env:{...env,YAPW_PORT:String(port)}});assert.equal(duplicate.code,1);assert.equal(await fs.readFile(path.join(state,"jobs.json"),"utf8"),before);
   console.log("PASS A second helper rejects an occupied port before touching the running queue");
   const repairTarget=path.join(runtime,"scripts","model.js");await fs.writeFile(repairTarget,"damaged");assert.equal((await run(exe,["--check","--no-pause"])).code,0);
-  const manifest=JSON.parse(await fs.readFile(path.join(moduleRoot,"helper","bundle-info.json"),"utf8")),expected=manifest.files.find(f=>f.path==="scripts/model.js");
+  const manifest=JSON.parse(await fs.readFile(path.join(path.dirname(helperExe),"bundle-info.json"),"utf8")),expected=manifest.files.find(f=>f.path==="scripts/model.js");
   assert.equal(crypto.createHash("sha256").update(await fs.readFile(repairTarget)).digest("hex"),expected.sha256);
   console.log("PASS Damaged extracted assets are verified and restored from EXE without downloading anything");
   console.log(`Standalone helper ${diagnostic.version}: all checks passed.`);

@@ -1,6 +1,7 @@
 <!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Yet another player widget — проверка интерфейса</title>
 <link rel="stylesheet" href="../styles/player.css"><style>html,body{margin:0;width:100%;height:100%;background:#24292b;color:#e6e8e7;font:14px Segoe UI,sans-serif}body{background:radial-gradient(ellipse at 40% 40%,#3a433c,#20272b)}body>p{position:absolute;bottom:20px;left:25px;color:#89948c}#test-controls{position:absolute;right:20px;top:20px;display:flex;gap:10px}#test-controls button{padding:10px;background:#20262d;color:#ddd;border:1px solid #555;border-radius:7px}.fa-solid{display:inline-block;width:1em;text-align:center;font-style:normal}.fa-solid:before{content:'♪'}.fa-plus:before{content:'+'}.fa-xmark:before{content:'×'}.fa-play:before{content:'▶'}.fa-pause:before{content:'Ⅱ'}.fa-stop:before{content:'■'}.fa-forward-step:before{content:'⏭'}.fa-backward-step:before{content:'⏮'}.fa-expand:before{content:'⛶'}.fa-compress:before{content:'↙'}.fa-sliders:before{content:'☷'}.fa-grip:before{content:'⠿'}.fa-magnifying-glass:before{content:'⌕'}.fa-list:before{content:'☰'}.fa-angle-up:before{content:'⌃'}.fa-angle-down:before{content:'⌄'}.fa-angle-right:before{content:'›'}.fa-grip-vertical:before{content:'⠿'}.fa-volume-xmark:before{content:'×'}.fa-arrow-up-right-from-square:before{content:'↗'}.fa-circle-check:before{content:'✓'}.fa-circle-exclamation:before{content:'!'}.fa-pen:before{content:'✎'}.fa-rotate-right:before{content:'↻'}.fa-volume-high:before{content:'◖'}.fa-volume-low:before{content:'◖'}.fa-download:before{content:'↓'}.fa-headphones:before{content:'♫'}.fa-compact-disc:before{content:'◎'}.fa-table-cells-large:before{content:'▦'}.fa-record-vinyl:before{content:'◎'}.fa-trash:before{content:'⌫'}.fa-file-import:before{content:'⇥'}.fa-file-export:before{content:'⇤'}</style>
 <style>.fa-list-ol:before{content:"≡"}.fa-repeat:before{content:"↻"}.fa-ban:before{content:'⊘'}.fa-broom:before{content:'⌁'}.fa-layer-group:before{content:'▱'}.fa-arrow-left:before{content:'←'}.fa-arrows-rotate:before{content:'↻'}</style>
+<style>.fa-arrow-down-a-z:before{content:'A↓'}.fa-arrow-down-z-a:before{content:'Z↓'}.fa-arrow-down-1-9:before{content:'◷↓'}.fa-arrow-down-9-1:before{content:'◷↑'}.fa-shuffle:before{content:'⤨'}</style>
 <p>Тестовое окружение · данные не сохраняются в мире Foundry</p><div id="test-controls"><button id="test-library">Библиотека</button><button id="test-player">Режим игрока</button><button id="test-player-two">Второй игрок</button><button id="test-gm">Режим ГМа</button></div>
 <script type="module">
 const params=new URLSearchParams(location.search);
@@ -53,6 +54,20 @@ if(params.has('cancel')||params.has('clear')){
     if(!body)return {jobs};
     const job=jobs.find(j=>j.key===body.key);if(body.retry&&job.status==='cancelled')job.status='queued';return job;
   };
+}
+if(params.has('cookies')){
+  const w=window.testWidget;store.helper.token='preview';
+  let status={configured:false,count:0,file:'C:\\Users\\Example\\AppData\\Local\\YetAnotherPlayerWidget\\cookies.txt'};
+  w.downloads.request=async(endpoint,body)=>{
+    if(endpoint==='/cookies'){
+      if(body)status={...status,configured:body.clear!==true,count:body.clear?0:1};
+      return {...status};
+    }
+    if(endpoint==='/health')return {ok:true,cookies:{...status}};
+    if(!body)return {jobs:[],cookies:{...status}};
+    return {id:'preview-cookie-job',status:'error',progress:0,error:'YouTube требует входа или подтверждения возраста. Добавьте cookies.txt и повторите загрузку.'};
+  };
+  w.downloads.cookies={...status};w.downloads.online=true;w.downloads.message='Помощник подключён';w.tab='queue';
 }
 await window.testWidget.library.reconcile();
 const native=playlist('Музыка Foundry — пример',[]);await native.setFlag(ID,'managed',false);

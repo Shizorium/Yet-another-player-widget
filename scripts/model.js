@@ -1,5 +1,21 @@
 export const ID = "yet-another-player-widget";
 export const ROOT = `modules/${ID}`;
+export const MAX_COOKIES_BYTES = 1024 * 1024;
+export function youtubeCookies(text) {
+  if (typeof text !== "string" || new TextEncoder().encode(text).length > MAX_COOKIES_BYTES) throw new Error("Файл cookies должен быть текстовым и не больше 1 МБ.");
+  const lines = text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n");
+  if (!/^# (?:Netscape )?HTTP Cookie File\s*$/.test(lines[0])) throw new Error("Нужен cookies.txt в формате Netscape, а не JSON или заголовок Cookie.");
+  const cookies = [];
+  for (const line of lines.slice(1)) {
+    if (!line.trim() || (line.startsWith("#") && !line.startsWith("#HttpOnly_"))) continue;
+    const fields = line.replace(/^#HttpOnly_/, "").split("\t");
+    if (fields.length !== 7 || !/^(TRUE|FALSE)$/.test(fields[1]) || fields[0].startsWith(".") !== (fields[1] === "TRUE") || !fields[2].startsWith("/") || !/^(TRUE|FALSE)$/.test(fields[3]) || !/^\d*$/.test(fields[4]) || !Number.isSafeInteger(Number(fields[4])) || !fields[5] || fields.some(field => /[\x00-\x1f\x7f]/.test(field))) throw new Error("Некорректный формат cookies.txt. Экспортируйте файл заново в формате Netscape.");
+    const host = fields[0].replace(/^\./, "").toLowerCase();
+    if (host === "youtube.com" || host.endsWith(".youtube.com")) cookies.push(line);
+  }
+  if (!cookies.length) throw new Error("В файле не найдены cookies YouTube. Экспортируйте cookies домена youtube.com.");
+  return { text: ["# Netscape HTTP Cookie File", ...cookies, ""].join("\n"), count: cookies.length };
+}
 export const STATUS = Object.freeze({ queued: "В очереди", resolving: "Чтение плейлиста", downloading: "Скачивается", processing: "Обработка", uploading: "Загрузка файла", cancelling: "Отменяется", cancelled: "Отменено", ready: "Загружен", error: "Ошибка" });
 export const isDownloadActive = track => ["queued", "resolving", "downloading", "processing", "uploading"].includes(track.status);
 export const isDownloadFinished = track => ["ready", "cancelled", "error"].includes(track.status) && !track.cancelRequested;

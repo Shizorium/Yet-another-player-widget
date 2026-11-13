@@ -454,6 +454,13 @@ export class PlayerWidget {
     });
     dialog.showModal(); return dialog;
   }
+  async cookiesDialog() {
+    const status = await this.downloads.cookiesRequest();
+    return this.form("Cookies YouTube", `<p class="yapw-help">Для видео, требующих входа или подтверждённого возраста, экспортируйте cookies своего аккаунта YouTube в формате Netscape cookies.txt.</p><label>Файл cookies.txt<input type="file" name="cookies" accept=".txt,text/plain" required></label><p class="yapw-help">Будут сохранены только cookies домена youtube.com. Они передаются помощнику и хранятся вне общедоступного хранилища Foundry; в мир и резервные копии библиотеки файл не попадает. Cookies дают доступ к аккаунту: не передавайте их другим людям.</p><p class="yapw-help">Можно также вручную положить файл на компьютере помощника по пути:<br><code class="yapw-cookie-path">${e(status.file)}</code><br>Перезапуск для замены cookies не требуется. После сохранения нажмите «Повторить все неудачные» или повтор нужного трека.</p><p class="yapw-help"><a href="https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies" target="_blank" rel="noopener noreferrer">Инструкция yt-dlp по экспорту cookies YouTube</a></p>`, async data => {
+      await this.downloads.uploadCookies(data.get("cookies"));
+      ui.notifications.info("Cookies YouTube сохранены в помощнике. Повторите неудачные загрузки.");
+    }, "Сохранить cookies");
+  }
   async settings() {
     const layout = game.settings.get(ID,"layout"), helper = game.settings.get(ID,"helper");
     const transparency = game.settings.get(ID,"miniTransparency");
@@ -617,6 +624,8 @@ export class PlayerWidget {
     if (action === "deselect") { this.selected = null; this.refresh(); return; }
     if (action.startsWith("tab-")) { this.tab = action.slice(4); this.refresh(); return; }
     if (!game.user.isGM) throw new Error("Управление доступно ведущему.");
+    if (action === "cookies-upload") return this.cookiesDialog();
+    if (action === "cookies-remove") { await this.downloads.cookiesRequest({ clear: true }); ui.notifications.info("Файл cookies удалён из помощника. Новые загрузки будут выполняться без него."); return; }
     if (action === "autoplay" || action === "repeat") { await this.library.togglePlaybackOption(slot,action); this.schedule(); return; }
     if (action === "import-foundry") return this.confirmImport("foundry");
     if (action === "create" || action === "rename") return this.form(action === "create" ? "Новый плейлист" : "Название плейлиста", `<label>Название<input name="name" required maxlength="180" value="${action === "rename" ? e(game.playlists.get(pid)?.name) : ""}" autofocus></label>`, async data => {
@@ -633,7 +642,8 @@ export class PlayerWidget {
       return;
     }
     if (action === "play") { await this.preview.stop(); return this.library.play(pid,tid); }
-    if (action === "play-playlist") { const t = this.library.tracks(game.playlists.get(pid)).find(t=>t.status==="ready"); if (!t) throw new Error("В плейлисте пока нет загруженных треков."); await this.preview.stop(); return this.library.play(pid,t.id); }
+    if (action === "play-playlist" || action === "shuffle-playlist") { await this.preview.stop(); return this.library.playPlaylist(pid,action === "shuffle-playlist"); }
+    if (action === "sort-tracks") return this.library.sortTracks(pid,element.dataset.order);
     if (action === "toggle") { if (!this.library.soundAt(slot)) return this.openFull(); if (!this.library.soundAt(slot).playing) await this.preview.stop(); return this.library.toggle(slot); }
     if (action === "stop") { await this.preview.stop(); return this.library.stopLayer(slot); }
     if (action === "next" || action === "previous") { await this.preview.stop(); return this.library.step(action === "next" ? 1 : -1,slot); }

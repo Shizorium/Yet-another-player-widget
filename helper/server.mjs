@@ -5,10 +5,11 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { youtubeSource, ID } from "../scripts/model.js";
+import { youtubeSource, youtubeCookies, MAX_COOKIES_BYTES, ID } from "../scripts/model.js";
 
 const moduleDir = path.resolve(process.env.YAPW_MODULE_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 export const defaultStateDir = process.env.YAPW_STATE_DIR || path.join(os.tmpdir(), `yapw-${crypto.createHash("sha256").update(moduleDir).digest("hex").slice(0, 12)}`);
+export const defaultCookiesFile = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "share"), "YetAnotherPlayerWidget", "cookies.txt");
 const publicPrefix = `modules/${ID}/storage/youtube`;
 const activeStatuses = new Set(["queued", "resolving", "downloading", "processing"]);
 
@@ -19,6 +20,8 @@ export class Downloader {
     const bundled = path.join(moduleDir, "helper", "bin", "yt-dlp.exe");
     this.command = options.command ?? process.env.YAPW_YTDLP ?? (process.platform === "win32" && existsSync(bundled) ? bundled : "yt-dlp");
     this.commandPrefix = options.commandPrefix ?? [];
+    this.cookiesFile = path.resolve(options.cookiesFile ?? process.env.YAPW_COOKIES ?? (options.stateDir || process.env.YAPW_STATE_DIR ? path.join(this.stateDir, "cookies.txt") : defaultCookiesFile));
+    this.cookieWrites = Promise.resolve();
     this.jobs = [];
     this.running = false;
     this.stopped = false;
@@ -27,6 +30,7 @@ export class Downloader {
   async init() {
     await fs.mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     await fs.mkdir(this.mediaDir, { recursive: true });
+    for (const name of await fs.readdir(this.stateDir)) if (/^cookies-session-[a-f0-9]{24}\.txt$/.test(name)) await fs.rm(path.join(this.stateDir, name), { force: true });
     try { this.jobs = JSON.parse(await fs.readFile(path.join(this.stateDir, "jobs.json"), "utf8")); }
     catch (error) { if (error.code !== "ENOENT") throw new Error(`Не удалось прочитать очередь: ${error.message}`); }
     for (const job of this.jobs) if (activeStatuses.has(job.status)) { job.status = "queued"; job.progress = 0; }
@@ -46,6 +50,47 @@ export class Downloader {
     });
     this.persistQueue = task;
     return task;
+  }
+  async readCookies() {
+    try {
+      const stat = await fs.stat(this.cookiesFile);
+      if (!stat.isFile() || stat.size > MAX_COOKIES_BYTES) throw new Error("Файл cookies должен быть текстовым и не больше 1 МБ.");
+      return youtubeCookies(await fs.readFile(this.cookiesFile, "utf8"));
+    } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  }
+  async cookiesStatus() {
+    try {
+      const cookies = await this.readCookies();
+      return { configured: Boolean(cookies), count: cookies?.count ?? 0, file: this.cookiesFile };
+    } catch { return { configured: false, count: 0, file: this.cookiesFile, error: "Не удалось прочитать cookies.txt. Замените его файлом Netscape с cookies YouTube." }; }
+  }
+  saveCookies(text) {
+    const cookies = text === null ? null : youtubeCookies(text);
+    const task = this.cookieWrites.catch(() => {}).then(async () => {
+      const dataDir = path.dirname(path.dirname(moduleDir));
+      const relative = path.relative(dataDir, this.cookiesFile);
+      if (!relative || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative))) throw new Error("Cookies нельзя сохранять в общедоступной папке Foundry Data. Укажите YAPW_COOKIES вне неё или используйте путь по умолчанию.");
+      if (!cookies) await fs.rm(this.cookiesFile, { force: true });
+      else {
+        await fs.mkdir(path.dirname(this.cookiesFile), { recursive: true, mode: 0o700 });
+        const temporary = `${this.cookiesFile}.${crypto.randomBytes(12).toString("hex")}.tmp`;
+        try {
+          await fs.writeFile(temporary, cookies.text.replace(/\n/g, os.EOL), { mode: 0o600, flag: "wx" });
+          await fs.rename(temporary, this.cookiesFile);
+        } finally { await fs.rm(temporary, { force: true }); }
+      }
+      return this.cookiesStatus();
+    });
+    this.cookieWrites = task;
+    return task;
+  }
+  async cookieSnapshot() {
+    await this.cookieWrites.catch(() => {});
+    const cookies = await this.readCookies();
+    if (!cookies) return null;
+    const file = path.join(this.stateDir, `cookies-session-${crypto.randomBytes(12).toString("hex")}.txt`);
+    await fs.writeFile(file, cookies.text.replace(/\n/g, os.EOL), { mode: 0o600, flag: "wx" });
+    return file;
   }
   async enqueue(data) {
     const source = youtubeSource(data.url);
@@ -142,9 +187,14 @@ export class Downloader {
   async run(job) {
     const cached = await this.cachedResult(job);
     if (cached) return cached;
+    const cookiesFile = await this.cookieSnapshot();
+    try { return await this.runDownload(job, cookiesFile); }
+    finally { if (cookiesFile) await fs.rm(cookiesFile, { force: true }); }
+  }
+  async runDownload(job, cookiesFile) {
     const common = ["--ignore-config", "--no-colors", "--encoding", "utf-8", "--socket-timeout", "30", "--retries", "3", "--js-runtimes", `node:${process.execPath}`];
     if (process.env.YAPW_FFMPEG) common.push("--ffmpeg-location", process.env.YAPW_FFMPEG);
-    if (process.env.YAPW_COOKIES) common.push("--cookies", process.env.YAPW_COOKIES);
+    if (cookiesFile) common.push("--cookies", cookiesFile);
     if (job.kind === "resolve") {
       job.status = "resolving"; await this.persist();
       const output = await this.execute([...common, "--flat-playlist", "--dump-single-json", "--yes-playlist", "--", job.url], null, 5 * 60 * 1000, job);
@@ -159,25 +209,41 @@ export class Downloader {
       if (!entries.length) throw new Error("Плейлист пуст, закрыт или недоступен.");
       return { title: String(info.title || "Плейлист YouTube"), entries };
     }
-    const source = youtubeSource(job.url);
-    const dir = path.join(this.mediaDir, source.videoId);
+    return this.downloadTrack(job, common, Boolean(cookiesFile));
+  }
+  async downloadTrack(job, common, privateDownload) {
+    const source = youtubeSource(job.url), dir = path.join(this.mediaDir, source.videoId);
     await fs.mkdir(dir, { recursive: true });
-    if (job.status === "cancelled") throw new Error("Загрузка отменена.");
-    job.status = "downloading"; await this.persist();
-    await this.execute([...common, "--no-playlist", "--newline", "--progress", "--progress-delta", "1", "--progress-template", "download:YAPW:%(progress._percent_str)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "-f", "bestaudio/best", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "192K", "--no-mtime", "-o", path.join(dir, "track.%(ext)s"), "--", job.url], line => {
-      if (job.status === "cancelled") return;
-      const match = line.match(/^YAPW:\s*([\d.]+)%/);
-      if (match) job.progress = Math.min(99, Number(match[1]));
-      if (/ExtractAudio|ThumbnailsConvertor|Deleting original/.test(line)) job.status = "processing";
-    }, undefined, job);
-    const files = await fs.readdir(dir);
-    const audio = files.find(f => f === "track.mp3");
-    if (!audio) throw new Error("Загрузчик не создал MP3-файл. Проверьте наличие FFmpeg.");
-    const info = JSON.parse(await fs.readFile(path.join(dir, "track.info.json"), "utf8"));
-    const audioStat = await fs.stat(path.join(dir, audio));
-    await fs.writeFile(path.join(dir, "track.complete.json"), JSON.stringify({ id: source.videoId, size: audioStat.size, completedAt: Date.now() }));
-    const cover = files.includes("track.jpg") ? `${publicPrefix}/${source.videoId}/track.jpg` : "";
-    return { name: String(info.title || source.videoId), duration: Number.isFinite(info.duration) ? info.duration : null, path: `${publicPrefix}/${source.videoId}/${audio}`, cover, warning: cover ? "" : "YouTube не предоставил превью." };
+    const work = privateDownload ? await fs.mkdtemp(path.join(this.stateDir, "cookies-download-")) : dir;
+    try {
+      if (job.status === "cancelled") throw new Error("Загрузка отменена.");
+      job.status = "downloading"; await this.persist();
+      await this.execute([...common, "--no-playlist", "--newline", "--progress", "--progress-delta", "1", "--progress-template", "download:YAPW:%(progress._percent_str)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "-f", "bestaudio/best", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "192K", "--no-mtime", "-o", path.join(work, "track.%(ext)s"), "--", job.url], line => {
+        if (job.status === "cancelled") return;
+        const match = line.match(/^YAPW:\s*([\d.]+)%/);
+        if (match) job.progress = Math.min(99, Number(match[1]));
+        if (/ExtractAudio|ThumbnailsConvertor|Deleting original/.test(line)) job.status = "processing";
+      }, undefined, job);
+      const files = await fs.readdir(work);
+      if (!files.includes("track.mp3")) throw new Error("Загрузчик не создал MP3-файл. Проверьте наличие FFmpeg.");
+      const raw = JSON.parse(await fs.readFile(path.join(work, "track.info.json"), "utf8"));
+      const info = { id: source.videoId, title: String(raw.title || source.videoId), duration: Number.isFinite(raw.duration) ? raw.duration : null };
+      // Raw yt-dlp metadata can contain cookies and request headers; publish only these safe fields.
+      if (privateDownload) {
+        await fs.copyFile(path.join(work, "track.mp3"), path.join(dir, "track.mp3"));
+        if (files.includes("track.jpg")) await fs.copyFile(path.join(work, "track.jpg"), path.join(dir, "track.jpg"));
+      }
+      await fs.writeFile(path.join(dir, "track.info.json"), JSON.stringify(info));
+      const audioStat = await fs.stat(path.join(dir, "track.mp3"));
+      await fs.writeFile(path.join(dir, "track.complete.json"), JSON.stringify({ id: source.videoId, size: audioStat.size, completedAt: Date.now() }));
+      const cover = files.includes("track.jpg") ? `${publicPrefix}/${source.videoId}/track.jpg` : "";
+      return { name: info.title, duration: info.duration, path: `${publicPrefix}/${source.videoId}/track.mp3`, cover, warning: cover ? "" : "YouTube не предоставил превью." };
+    } finally {
+      if (privateDownload) {
+        if (path.dirname(path.resolve(work)) !== path.resolve(this.stateDir) || !/^cookies-download-[a-zA-Z0-9]{6}$/.test(path.basename(work))) throw new Error("Неожиданный путь временной загрузки.");
+        await fs.rm(work, { recursive: true, force: true });
+      }
+    }
   }
   async pump() {
     if (this.running || this.stopped) return;
@@ -187,14 +253,14 @@ export class Downloader {
       while (!this.stopped && (job = this.jobs.find(j => j.status === "queued"))) {
         this.currentJob = job;
         try { const result = await this.run(job); if (job.status !== "cancelled") Object.assign(job, { result, status: "ready", progress: 100, error: "" }); }
-        catch (error) { if (job.status !== "cancelled") { job.status = "error"; job.error = /429|Too Many Requests|Sign in to confirm.*not a bot/i.test(error.message) ? "YouTube временно ограничил запросы или требует проверку на бота. Подождите и повторите загрузку позже. Уже скачанные треки берутся из локального хранилища." : error.message; } }
+        catch (error) { if (job.status !== "cancelled") { job.status = "error"; job.error = /confirm your age|age.restricted|Use --cookies/i.test(error.message) ? "YouTube требует входа или подтверждения возраста. Во вкладке «Загрузки» добавьте cookies.txt аккаунта, которому доступно это видео, затем повторите загрузку." : /429|Too Many Requests|Sign in to confirm.*not a bot/i.test(error.message) ? "YouTube временно ограничил запросы или требует проверку на бота. Подождите и повторите позже; при требовании входа можно добавить cookies.txt во вкладке «Загрузки». Уже скачанные треки берутся из локального хранилища." : error.message; } }
         this.currentJob = null;
         job.updatedAt = Date.now(); await this.persist();
       }
     } catch (error) { console.error("Ошибка сохранения очереди:", error.message); }
     finally { this.running = false; }
   }
-  async close() { this.stopped = true; await this.killChildTree(); await this.persistQueue; }
+  async close() { this.stopped = true; await this.killChildTree(); await this.persistQueue; await this.cookieWrites.catch(() => {}); }
 }
 
 export async function createHelper(options = {}) {
@@ -216,12 +282,19 @@ export async function createHelper(options = {}) {
     if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) return reply(401, { error: "Неверный ключ помощника. Скопируйте ключ из окна запуска." });
     try {
       const url = new URL(req.url, "http://localhost");
-      if (req.method === "GET" && url.pathname === "/health") return reply(200, { ok: true, version: "1.3.0", features: ["cancel", "cache", "standalone"] });
-      if (req.method === "GET" && url.pathname === "/jobs") return reply(200, { jobs: downloader.jobs.filter(j => j.world === url.searchParams.get("world")) });
-      if (req.method === "POST" && ["/jobs", "/jobs/cancel"].includes(url.pathname)) {
+      if (req.method === "GET" && url.pathname === "/health") return reply(200, { ok: true, version: "1.4.0", features: ["cancel", "cache", "standalone", "cookies"], cookies: await downloader.cookiesStatus() });
+      if (req.method === "GET" && url.pathname === "/cookies") return reply(200, await downloader.cookiesStatus());
+      if (req.method === "GET" && url.pathname === "/jobs") return reply(200, { jobs: downloader.jobs.filter(j => j.world === url.searchParams.get("world")), cookies: await downloader.cookiesStatus() });
+      if (req.method === "POST" && ["/jobs", "/jobs/cancel", "/cookies"].includes(url.pathname)) {
         let body = "";
-        for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 32 * 1024) return reply(413, { error: "Слишком большой запрос." }); }
-        const data = JSON.parse(body);
+        const limit = url.pathname === "/cookies" ? MAX_COOKIES_BYTES * 2 : 32 * 1024;
+        for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > limit) return reply(413, { error: "Слишком большой запрос." }); }
+        let data;
+        try { data = JSON.parse(body); } catch { throw new Error("Некорректный JSON-запрос."); }
+        if (url.pathname === "/cookies") {
+          if (data?.clear !== true && typeof data?.text !== "string") throw new Error("Выберите файл cookies.txt.");
+          return reply(200, await downloader.saveCookies(data.clear === true ? null : data.text));
+        }
         return reply(200, url.pathname === "/jobs/cancel" ? await downloader.cancel(data) : await downloader.enqueue(data));
       }
       reply(404, { error: "Неизвестный адрес." });
@@ -249,7 +322,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const helper = await createHelper({port:Number(process.env.YAPW_PORT || 32123)});
     const port = helper.server.address().port;
-    console.log(`\nYet another player widget — помощник загрузок\nАдрес: http://127.0.0.1:${port}\nКлюч: ${helper.token}\n\nВставьте адрес и ключ в настройках плеера Foundry.\nОчередь работает, пока открыт этот процесс.\n`);
+    console.log(`\nYet another player widget — помощник загрузок\nАдрес: http://127.0.0.1:${port}\nКлюч: ${helper.token}\nCookies: ${helper.downloader.cookiesFile}\n\nВставьте адрес и ключ в настройках плеера Foundry.\nФайл cookies.txt можно добавить во вкладке «Загрузки» или положить по указанному пути.\nОчередь работает, пока открыт этот процесс.\n`);
     helper.server.on("error",error => {console.error(error.message);process.exitCode=1;});
     for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, async () => { await helper.close(); process.exit(0); });
   } catch (error) {

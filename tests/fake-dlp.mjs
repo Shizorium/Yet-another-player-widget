@@ -3,6 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {spawn} from "node:child_process";
 const args = process.argv.slice(2), url = args.at(-1);
+if (url.includes("agecheck001") && !args.includes("--cookies")) { console.error("ERROR: Sign in to confirm your age. Use --cookies for authentication."); process.exit(1); }
+if (args.includes("--cookies")) {
+  const file = args[args.indexOf("--cookies") + 1], cookies = await fs.readFile(file, "utf8");
+  if (!cookies.startsWith("# Netscape HTTP Cookie File")) throw new Error("Invalid test cookie jar");
+  await fs.appendFile(file, "\n# Changed by the test downloader\n");
+}
 if (args.includes("--dump-single-json")) {
   console.log(JSON.stringify({ title:"Test playlist", entries:[{id:"abcdefghijk",title:"First",duration:123},{id:"lmnopqrstuv",title:"Second",duration:42},null] }));
 } else {
@@ -20,5 +26,5 @@ if (args.includes("--dump-single-json")) {
   console.log("[ExtractAudio] Destination: track.mp3");
   await fs.writeFile(path.join(dir,"track.mp3"),"fixture");
   await fs.writeFile(path.join(dir,"track.jpg"),"fixture");
-  await fs.writeFile(path.join(dir,"track.info.json"),JSON.stringify({title:"Downloaded track",duration:123}));
+  await fs.writeFile(path.join(dir,"track.info.json"),JSON.stringify({title:"Downloaded track",duration:123,...(args.includes("--cookies")?{cookies:"SYNTHETIC_METADATA_SECRET",http_headers:{Cookie:"SYNTHETIC_METADATA_SECRET"}}:{})}));
 }

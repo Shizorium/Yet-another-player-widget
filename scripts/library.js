@@ -1,6 +1,14 @@
 import { ID, ROOT, clone, audioPath, youtubeTrack, importPlan, isDownloadActive, isDownloadFinished, isInDownloadQueue } from "./model.js";
 import { stampPlayback } from "./sync.js";
 
+function shuffle(items) {
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  return items;
+}
+
 export class Library {
   constructor() { this.queue = Promise.resolve(); }
   get playlists() { return game.playlists.filter(p => p.getFlag(ID, "managed") === true); }
@@ -104,6 +112,28 @@ export class Library {
     return this.edit(playlistId, tracks => {
       const index = tracks.findIndex(t => t.id === id), next = index + direction;
       if (index >= 0 && next >= 0 && next < tracks.length) [tracks[index], tracks[next]] = [tracks[next], tracks[index]];
+    });
+  }
+  sortTracks(playlistId, order) {
+    if (!["name", "duration", "shuffle"].includes(order)) throw new Error("Неизвестный порядок сортировки.");
+    return this.edit(playlistId, async (tracks, p) => {
+      if (order === "shuffle") { shuffle(tracks); await p.setFlag(ID, "trackSort", null); return; }
+      const previous = p.getFlag(ID, "trackSort");
+      const descending = previous?.order === order ? !previous.descending : false;
+      const direction = descending ? -1 : 1;
+      if (order === "name") {
+        const collator = new Intl.Collator("ru", { sensitivity: "base", numeric: true });
+        tracks.sort((a, b) => direction * collator.compare(a.name, b.name));
+      } else {
+        const duration = track => Number.isFinite(track.duration) && track.duration > 0 ? track.duration : null;
+        tracks.sort((a, b) => {
+          const left = duration(a), right = duration(b);
+          // Unknown durations stay at the end in either direction.
+          if (left === null || right === null) return Number(left === null) - Number(right === null);
+          return direction * (left - right);
+        });
+      }
+      await p.setFlag(ID, "trackSort", { order, descending });
     });
   }
   updateTrack(id, callback) {
@@ -364,6 +394,27 @@ export class Library {
   play(playlistId, trackId) {
     return this.write(() => this._play(playlistId, trackId));
   }
+  playPlaylist(playlistId, random = false) {
+    return this.write(async () => {
+      const p = this.playlists.find(p => p.id === playlistId);
+      if (!p) throw new Error("Плейлист уже удалён.");
+      const tracks = this.tracks(p);
+      if (!tracks.some(t => t.status === "ready" && t.path)) throw new Error("В плейлисте пока нет загруженных треков.");
+      await this._sync(p, tracks);
+      const order = tracks.filter(t => t.status === "ready" && t.path && p.sounds.has(t.id)).map(t => t.id);
+      if (!order.length) throw new Error("В плейлисте пока нет загруженных треков.");
+      if (random) shuffle(order);
+      const occupied = new Set(this.layers.filter(sound => sound.parent.id === p.id).map(sound => sound.id));
+      const start = order.findIndex(id => !occupied.has(id));
+      if (start > 0) order.push(...order.splice(0, start));
+      await p.setFlag(ID, "shuffleOrder", random ? order : null);
+      // Starting a whole playlist enables progression instead of repeating its first track.
+      await game.settings.set(ID, "layerPlayback", { ...game.settings.get(ID, "layerPlayback"), 0: { autoplay: true, repeat: false } });
+      const sound = p.sounds.get(order[0]);
+      if (this._alive(sound)) await this._updateSound(sound, { playing: false, pausedTime: null });
+      return this._play(p.id, sound.id);
+    });
+  }
   async _play(playlistId, trackId) {
     const p = game.playlists.get(playlistId), sound = p?.sounds.get(trackId);
     if (!p?.getFlag(ID, "managed") || !sound) throw new Error("Сначала дождитесь загрузки трека.");
@@ -421,7 +472,10 @@ export class Library {
     const sound = this.soundAt(slot);
     if (!sound) return;
     const occupied = [this.current, ...this.layers].filter(s => s && s !== sound);
-    const order = sound.parent.playbackOrder ?? this.tracks(sound.parent).filter(t => sound.parent.sounds.has(t.id)).map(t => t.id);
+    const tracks = this.tracks(sound.parent).filter(t => t.status === "ready" && t.path && sound.parent.sounds.has(t.id)).map(t => t.id);
+    const shuffled = slot === 0 ? sound.parent.getFlag(ID, "shuffleOrder") : null;
+    // Keep the saved random queue across refreshes, omitting removed tracks and appending new ones.
+    const order = Array.isArray(shuffled) ? [...new Set([...shuffled, ...tracks])].filter(id => tracks.includes(id)) : tracks;
     let index = order.indexOf(sound.id), next;
     for (let i = 0; i < order.length; i++) {
       index = (index + direction + order.length) % order.length;

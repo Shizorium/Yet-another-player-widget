@@ -110,6 +110,109 @@ await test("Natural endings advance only the ending layer, skip occupied tracks,
   await lib.stop();layerPlayback={};
 });
 
+await test("Alphabetical and duration sorting persist native order without interrupting playback, with unknown durations last",async()=>{
+  const lib=new Library(),p=await lib.create("Sorting");
+  for(const [name,duration] of [["Янтарь",null],["Трек 10",40],["альфа",20],["Трек 2",20],["Без времени",NaN]])await lib.addFile(p.id,`music/${nextId}.mp3`,name,duration);
+  await lib.play(p.id,p.sounds.contents[0].id);
+  const current=lib.current,clock=structuredClone(current.getFlag(ID,"clock"));
+  await lib.sortTracks(p.id,"name");
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["альфа","Без времени","Трек 2","Трек 10","Янтарь"]);
+  await new Library().sortTracks(p.id,"name");
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["Янтарь","Трек 10","Трек 2","Без времени","альфа"]);
+  assert.deepEqual(p.getFlag(ID,"trackSort"),{order:"name",descending:true});
+  const view={library:lib,selected:p.id,tab:"library",query:"",downloads:{online:true,message:"Test"},currentPlaylist:p};
+  for(const markup of [fullView(view),currentPlaylistView(view)])assert.match(markup,/fa-arrow-down-z-a/);
+  await lib.sortTracks(p.id,"name");
+  await lib.sortTracks(p.id,"duration");
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["альфа","Трек 2","Трек 10","Без времени","Янтарь"]);
+  await new Library().sortTracks(p.id,"duration");
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["Трек 10","альфа","Трек 2","Без времени","Янтарь"]);
+  assert.deepEqual(p.getFlag(ID,"trackSort"),{order:"duration",descending:true});
+  for(const markup of [fullView(view),currentPlaylistView(view)])assert.match(markup,/fa-arrow-down-9-1/);
+  await lib.sortTracks(p.id,"duration");
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["альфа","Трек 2","Трек 10","Без времени","Янтарь"]);
+  await Promise.all([lib.sortTracks(p.id,"duration"),lib.sortTracks(p.id,"duration")]);
+  assert.deepEqual(p.getFlag(ID,"trackSort"),{order:"duration",descending:false});
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["альфа","Трек 2","Трек 10","Без времени","Янтарь"]);
+  lib.tracks(p).forEach((t,i)=>assert.equal(p.sounds.get(t.id).sort,i*1000));
+  assert.equal(lib.current,current);assert.equal(current.playing,true);assert.deepEqual(current.getFlag(ID,"clock"),clock);
+  assert.equal(new Library().tracks(p)[0].name,"альфа");
+  game.user.isGM=false;
+  try{await assert.rejects(()=>lib.sortTracks(p.id,"shuffle"),/ведущий/);}finally{game.user.isGM=true;}
+  await lib.stop();
+});
+
+await test("Sort direction belongs to each playlist and resets when switching criteria or shuffling",async()=>{
+  const lib=new Library(),p=await lib.create("Sort direction"),other=await lib.create("Other sort direction");
+  for(const playlist of [p,other])for(const [name,duration] of [["B",20],["A",10],["C",30]])await lib.addFile(playlist.id,`music/${name}.mp3`,name,duration);
+  await lib.sortTracks(p.id,"name");await lib.sortTracks(p.id,"name");
+  await lib.sortTracks(other.id,"name");
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["C","B","A"]);
+  assert.deepEqual(lib.tracks(other).map(t=>t.name),["A","B","C"]);
+  await lib.sortTracks(p.id,"duration");
+  assert.deepEqual(lib.tracks(p).map(t=>t.duration),[10,20,30]);
+  await lib.sortTracks(p.id,"name");
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["A","B","C"]);
+  await lib.sortTracks(p.id,"name");await lib.sortTracks(p.id,"shuffle");
+  assert.equal(p.getFlag(ID,"trackSort"),null);
+  await lib.sortTracks(p.id,"name");
+  assert.deepEqual(lib.tracks(p).map(t=>t.name),["A","B","C"]);
+});
+
+await test("List shuffle saves a permutation including pending tracks and sequential playback follows it",async()=>{
+  const lib=new Library(),p=await lib.create("Shuffle list");
+  for(const name of ["A","B","C"])await lib.addFile(p.id,`music/${name}.mp3`,name,90);
+  await lib.edit(p.id,tracks=>tracks.push({id:"pending-sort",name:"Downloading",status:"queued",path:"",duration:null}));
+  const before=lib.tracks(p),random=Math.random;
+  try{Math.random=()=>0;await lib.sortTracks(p.id,"shuffle");}finally{Math.random=random;}
+  assert.deepEqual(lib.tracks(p).map(t=>t.id),[...before.slice(1),before[0]].map(t=>t.id));
+  assert.equal(p.sounds.contents.length,3);
+  await lib.playPlaylist(p.id);
+  assert.equal(lib.current.id,before[1].id);
+  await lib.onSoundEnd(lib.current,lib.current.getFlag(ID,"clock").id);
+  assert.equal(lib.current.id,before[2].id);
+  await lib.step(1);assert.equal(lib.current.id,before[0].id);
+  assert.deepEqual(lib.playbackOptions(0),{autoplay:true,repeat:false});
+  await lib.stop();layerPlayback={};
+});
+
+await test("Random playlist playback keeps the displayed list, traverses a saved queue, skips layers and removed tracks, and resets on normal play",async()=>{
+  const lib=new Library(),p=await lib.create("Random playback");
+  for(const name of ["A","B","C","D"])await lib.addFile(p.id,`music/${name}.mp3`,name,90);
+  const [a,b,c,d]=lib.tracks(p),original=lib.tracks(p),random=Math.random;
+  await lib.play(p.id,a.id);await lib.addLayer(p.id,c.id);
+  const layerClock=structuredClone(p.sounds.get(c.id).getFlag(ID,"clock"));
+  try{Math.random=()=>0;await lib.playPlaylist(p.id,true);}finally{Math.random=random;}
+  assert.deepEqual(lib.tracks(p),original);assert.deepEqual(p.getFlag(ID,"shuffleOrder"),[b.id,c.id,d.id,a.id]);
+  assert.equal(lib.current.id,b.id);assert.equal(lib.current.repeat,false);
+  assert.equal(lib.soundAt(1).id,c.id);assert.deepEqual(lib.soundAt(1).getFlag(ID,"clock"),layerClock);
+  const restored=new Library();await restored.onSoundEnd(restored.current,restored.current.getFlag(ID,"clock").id);
+  assert.equal(restored.current.id,d.id);assert.equal(restored.soundAt(1).id,c.id);
+  await restored.step(-1);assert.equal(restored.current.id,b.id);
+  await lib.removeTrack(p.id,d.id);await lib.addFile(p.id,"music/E.mp3","E",90);
+  await lib.step(1);assert.equal(lib.current.id,a.id);
+  await lib.step(1);assert.equal(lib.current.name,"E");
+  await lib.playPlaylist(p.id);assert.equal(p.getFlag(ID,"shuffleOrder"),null);assert.equal(lib.current.id,a.id);
+  await lib.step(1);assert.equal(lib.current.id,b.id);
+  await lib.stop();layerPlayback={};
+  const empty=await lib.create("Empty random playlist");
+  await assert.rejects(()=>lib.playPlaylist(empty.id,true),/нет загруженных/);
+});
+
+await test("Starting a playlist skips the first queued track when it is already on the second layer",async()=>{
+  const lib=new Library(),p=await lib.create("Occupied first track");
+  for(const name of ["A","B","C"])await lib.addFile(p.id,`music/${name}.mp3`,name,90);
+  const [a,b,c]=lib.tracks(p),random=Math.random;
+  await lib.play(p.id,b.id);await lib.addLayer(p.id,a.id);
+  const clock=structuredClone(lib.soundAt(1).getFlag(ID,"clock"));
+  try{Math.random=()=>0.999;await lib.playPlaylist(p.id,true);}finally{Math.random=random;}
+  assert.equal(lib.current.id,b.id);assert.equal(lib.soundAt(1).id,a.id);
+  assert.deepEqual(lib.soundAt(1).getFlag(ID,"clock"),clock);
+  assert.deepEqual(p.getFlag(ID,"shuffleOrder"),[b.id,c.id,a.id]);
+  await lib.playPlaylist(p.id);assert.equal(lib.current.id,b.id);assert.equal(lib.soundAt(1).id,a.id);
+  await lib.stop();layerPlayback={};
+});
+
 await test("Duplicate or obsolete end callbacks and a non-active GM cannot advance playback",async()=>{
   const lib=new Library(),p=await lib.create("End race");
   for(const name of ["a","b","c"])await lib.addFile(p.id,`music/${name}.mp3`,name,123);
@@ -311,6 +414,27 @@ await test("Track controls expose audition, layer and complete stop without orde
   const ui={library:lib,selected:p.id,tab:"library",query:"",downloads:{online:true,message:"Test"},currentPlaylist:p,preview:new TrackPreview()};
   for(const markup of [fullView(ui),currentPlaylistView(ui)]){assert.match(markup,/data-action="preview"/);assert.match(markup,/data-action="add-layer"/);assert.match(markup,/data-action="stop-track"/);assert.doesNotMatch(markup,/data-action="(?:up|down)"/);}
   game.user.isGM=false;assert.doesNotMatch(currentPlaylistView(ui),/data-action="(?:preview|add-layer)"/);game.user.isGM=true;await lib.stop();
+});
+
+await test("Both playlist windows expose sorting controls and adjacent normal/random playback scoped to their playlist",async()=>{
+  const lib=new Library(),p=await lib.create("Selected playlist"),popup=await lib.create("Popup playlist");
+  await lib.addFile(p.id,"music/control.mp3","Control",123);await lib.addFile(popup.id,"music/mini.mp3","Mini",90);
+  const view={library:lib,selected:p.id,tab:"library",query:"",downloads:{online:true,message:"Test"},currentPlaylist:p,popupPlaylist:popup};
+  for(const [markup,pid] of [[fullView(view),p.id],[currentPlaylistView(view),popup.id]]){
+    assert.match(markup,new RegExp(`<div class="yapw-track-sort" data-playlist="${pid}"`));
+    for(const order of ["name","duration","shuffle"])assert.match(markup,new RegExp(`data-action="sort-tracks"[^>]*data-order="${order}"`));
+    assert.match(markup,/data-action="play-playlist"[^]*?<\/button><button type="button" data-action="shuffle-playlist"/);
+  }
+  assert.doesNotMatch(currentPlaylistView({...view,miniBrowseAll:true}),/data-action="(?:sort-tracks|shuffle-playlist)"/);
+  globalThis.Hooks={once:()=>{},on:()=>{}};
+  const {PlayerWidget}=await import("../scripts/main.js");
+  const calls=[],widget={selected:p.id,closePlaylistMenu:()=>{},preview:{stop:async()=>calls.push("stop-preview")},library:{sortTracks:async(...args)=>calls.push(args),playPlaylist:async(...args)=>calls.push(args)}};
+  const element={dataset:{order:"duration"},closest:selector=>selector==="[data-playlist]"?{dataset:{playlist:popup.id}}:null};
+  await PlayerWidget.prototype.action.call(widget,"sort-tracks",element);
+  await PlayerWidget.prototype.action.call(widget,"shuffle-playlist",element);
+  assert.deepEqual(calls,[[popup.id,"duration"],"stop-preview",[popup.id,true]]);
+  game.user.isGM=false;
+  try{await assert.rejects(()=>PlayerWidget.prototype.action.call(widget,"sort-tracks",element),/ведущему/);}finally{game.user.isGM=true;}
 });
 
 await test("Queue application expands playlists, preserves custom names and creates native sounds",async()=>{
@@ -633,4 +757,5 @@ await (await import("./sync.mjs")).syncTests(test);
 await (await import("./readiness.mjs")).readinessTests(test);
 await (await import("./shared-start.mjs")).sharedStartTests(test);
 await (await import("./player-view.mjs")).playerViewTests(test);
+await (await import("./cookies.mjs")).cookiesTests(test);
 console.log(`\n${passed} tests passed.`);

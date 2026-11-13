@@ -1,7 +1,7 @@
-import { ID, youtubeTrack, clone, isDownloadActive } from "./model.js";
+import { ID, youtubeTrack, youtubeCookies, MAX_COOKIES_BYTES, clone, isDownloadActive } from "./model.js";
 
 export class Downloads {
-  constructor(library, changed) { this.library = library; this.changed = changed; this.online = false; this.message = "Помощник не подключён"; this.busy = false; }
+  constructor(library, changed) { this.library = library; this.changed = changed; this.online = false; this.message = "Помощник не подключён"; this.busy = false; this.cookies = null; }
   get config() { return game.settings.get(ID, "helper"); }
   async request(endpoint, body) {
     const { url, token } = this.config;
@@ -22,9 +22,27 @@ export class Downloads {
     } finally { clearTimeout(timer); }
   }
   async check() {
-    try { await this.request("/health"); this.online = true; this.message = "Помощник подключён"; }
+    try { const health = await this.request("/health"); this.cookies = health.cookies ?? null; this.online = true; this.message = "Помощник подключён"; }
     catch (error) { this.online = false; this.message = error.message; throw error; }
     finally { this.changed(); }
+  }
+  async cookiesRequest(body) {
+    if (!game.user.isGM) throw new Error("Cookies загрузчика настраивает ведущий.");
+    try {
+      const status = await this.request("/cookies", body);
+      this.cookies = status; this.changed();
+      return status;
+    } catch (error) {
+      if (/Неизвестный адрес/.test(error.message)) throw new Error("Для cookies обновите и перезапустите помощник helper/Helper.exe, затем повторите попытку.");
+      throw error;
+    }
+  }
+  async uploadCookies(file) {
+    if (!game.user.isGM) throw new Error("Cookies загрузчика настраивает ведущий.");
+    if (!file?.size || typeof file.text !== "function") throw new Error("Выберите файл cookies.txt.");
+    if (file.size > MAX_COOKIES_BYTES) throw new Error("Файл cookies должен быть не больше 1 МБ.");
+    const cookies = youtubeCookies(await file.text());
+    return this.cookiesRequest({ text: cookies.text });
   }
   flushCancellations() {
     if (this.cancelSync) return this.cancelSync;
@@ -79,7 +97,8 @@ export class Downloads {
       if (!this.config.token) return;
       const world = game.world.id;
       await this.flushCancellations();
-      let { jobs } = await this.request(`/jobs?world=${encodeURIComponent(world)}`);
+      let { jobs, cookies } = await this.request(`/jobs?world=${encodeURIComponent(world)}`);
+      this.cookies = cookies ?? null;
       if (await this.reconcileJobs(jobs)) ({ jobs } = await this.request(`/jobs?world=${encodeURIComponent(world)}`));
       this.online = true; this.message = "Помощник подключён";
       for (const p of this.library.playlists) {
