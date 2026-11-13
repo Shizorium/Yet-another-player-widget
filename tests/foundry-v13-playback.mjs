@@ -25,6 +25,7 @@ const NativeMethods=new Function("PLAYLIST_MODES",`return class {${nativeMethods
 class MemoryPlaylist extends foundry.documents.BasePlaylist {
   static get database(){return {getFlagScopes:()=>[ID,"core","world"]};}
   async setFlag(scope,key,value){this.updateSource({[`flags.${scope}.${key}`]:value});return this;}
+  async updateEmbeddedDocuments(type,changes){return changes.map(change=>{const sound=this.sounds.get(change._id);sound.updateSource(change);return sound;});}
   async update(changes){
     const {sounds=[],...parent}=changes;
     const merged=this.sounds.contents.map(s=>({...s.toObject(),...sounds.find(update=>update._id===s.id)}));
@@ -186,3 +187,8 @@ beginPlayback();await seekingTask;
 game.audio.music.currentTime+=0.25;assert.equal(seekSync.position(seeking),86.65);
 await library.stop();seekSync.tick();foundry.audio.Sound=MemorySound;
 console.log("PASS Seek position stays selected while the real v13 Sound getter returns NaN during STARTING and follows audio after the deadline");
+const stored=playlist("Storage migration"),storedId=stored.sounds.contents[0].id;await library.play(stored.id,storedId);
+await library.applyStorage([{id:storedId,oldPath:"music/test.mp3",path:`yapw-media/test/${storedId}/audio.mp3`,oldCover:"",cover:""}]);
+const movedSound=stored.sounds.get(storedId);assert.equal(movedSound.playing,true);assert.equal(movedSound.pausedTime,37);assert.equal(movedSound.getFlag(ID,"clock").path,movedSound.path);
+assert.equal(movedSound.path,stored.getFlag(ID,"tracks")[0].path);await library.stop();
+console.log("PASS Storage migration retains playing state and position using real v13 PlaylistSound schemas and a renewed synchronization clock");

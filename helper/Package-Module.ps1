@@ -21,7 +21,7 @@ $exeHash = Get-Sha256 $exeFile
 if ($exeHash -ne $bundle.executableSha256 -or -not (Get-Content -LiteralPath ($exeFile + '.sha256') -Raw).StartsWith($exeHash)) { throw 'Helper.exe checksum mismatch. Rebuild the helper.' }
 foreach ($record in $bundle.files) {
     $source = $null
-    if ($record.path -in @('helper/server.mjs','scripts/model.js')) { $source = Join-Path $moduleRoot $record.path }
+    if ($record.path -in @('helper/server.mjs','helper/storage.mjs','scripts/model.js')) { $source = Join-Path $moduleRoot $record.path }
     elseif ($record.path.StartsWith('licenses/')) { $source = Join-Path $PSScriptRoot $record.path }
     if ($source -and (Get-Sha256 $source) -ne $record.sha256) { throw ('Embedded source changed; rebuild EXE: ' + $record.path) }
 }
@@ -43,7 +43,7 @@ function Add-ReleaseDirectory([string]$RelativePath) {
 }
 foreach ($name in @('.gitattributes','.gitignore','module.json','package.json','README.md','CHANGELOG.md')) { Add-ReleaseFile $name }
 foreach ($name in @('scripts','styles','docs','tests','helper/licenses')) { Add-ReleaseDirectory $name }
-foreach ($name in @('build-helper.mjs','Build-Helper.ps1','Package-Module.ps1','bundle-info.json','component-sources.json','Helper.exe','Helper.exe.sha256','launcher.cjs','server.mjs','Start-Helper.cmd','Start-Helper.ps1','Update-Downloader.ps1','bin/SOURCE.txt','build-tools/package.json','build-tools/package-lock.json')) { Add-ReleaseFile ('helper/' + $name) }
+foreach ($name in @('build-helper.mjs','Build-Helper.ps1','Package-Module.ps1','bundle-info.json','component-sources.json','Helper.exe','Helper.exe.sha256','launcher.cjs','server.mjs','storage.mjs','Start-Helper.cmd','Start-Helper.ps1','Update-Downloader.ps1','bin/SOURCE.txt','build-tools/package.json','build-tools/package-lock.json')) { Add-ReleaseFile ('helper/' + $name) }
 foreach ($name in @('storage/uploads/.gitkeep','storage/youtube/.gitkeep')) { Add-ReleaseFile $name }
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 $archivePath = Join-Path $releaseRoot $zipName

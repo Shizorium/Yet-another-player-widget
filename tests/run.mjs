@@ -573,6 +573,19 @@ await test("Late playlist resolution cannot revive cancelled tracks or expand th
   await queue.tick();await queue.tick();
   assert.equal(submissions,1);assert.equal(lib.tracks(p).length,1);assert.equal(lib.tracks(p)[0].status,"cancelled");assert.equal(p.sounds.contents.length,0);
 });
+await test("Applying storage results keeps a playing track, its offset and layer selection, and does not overwrite a concurrently replaced source",async()=>{
+  const lib=new Library(),p=await lib.create("Storage playback");await lib.addFile(p.id,"music/storage-old.mp3","Storage",123);
+  const t=lib.tracks(p)[0];await lib.play(p.id,t.id);const selectionBefore=structuredClone(selection);
+  await lib.applyStorage([{id:t.id,oldPath:t.path,path:`yapw-media/world/${t.id}/audio.mp3`,oldCover:"",cover:""}]);
+  const sound=p.sounds.get(t.id);assert.equal(sound.playing,true);assert.equal(sound.pausedTime,37);assert.equal(sound.path,lib.tracks(p)[0].path);assert.deepEqual(selection,selectionBefore);
+  assert.equal(sound.flags[ID].clock.path,sound.path);
+  await lib.applyStorage([{id:t.id,oldPath:t.path,path:"yapw-media/world/stale/audio.mp3",oldCover:"",cover:""}]);assert.equal(sound.path,`yapw-media/world/${t.id}/audio.mp3`);
+  sound.sound.currentTime=NaN;sound.flags[ID].clock.offset=86.4;
+  const next={id:t.id,oldPath:sound.path,path:`yapw-media/world/${t.id}/audio.ogg`,oldCover:"",cover:""};
+  const update=p.updateEmbeddedDocuments;p.updateEmbeddedDocuments=async()=>{throw Error("Synthetic document save failure");};
+  await assert.rejects(lib.applyStorage([next]),/Synthetic/);p.updateEmbeddedDocuments=update;
+  await lib.applyStorage([next]);assert.equal(sound.path,next.path);assert.equal(sound.pausedTime,86.4);assert.equal(sound.playing,true);
+});
 await test("Cancelling a local file aborts the upload request and never creates a playable sound",async()=>{
   globalThis.Hooks={once:()=>{},on:()=>{}};
   const {PlayerWidget}=await import("../scripts/main.js");
@@ -581,7 +594,7 @@ await test("Cancelling a local file aborts the upload request and never creates 
   const originalFetch=globalThis.fetch;let started=false,signal;
   foundry.applications={apps:{FilePicker:{uploadURL:"/upload"}}};
   globalThis.fetch=async(url,options)=>{started=true;signal=options.signal;return new Promise((resolve,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}));};
-  const widget={library:lib,uploadFiles:new Map([[id,new File(["sample"],"test.mp3")]]),uploadControllers:new Map(),schedule:()=>{},downloads:{flushCancellations:async()=>{}}};
+  const widget={library:lib,storage:{uploadTarget:async()=>null},uploadFiles:new Map([[id,new File(["sample"],"test.mp3")]]),uploadControllers:new Map(),schedule:()=>{},downloads:{flushCancellations:async()=>{}}};
   try {
     const upload=PlayerWidget.prototype.upload.call(widget,p.id,id);await until(()=>started);
     await PlayerWidget.prototype.cancelDownloads.call(widget,p.id,id);await upload;
@@ -758,4 +771,5 @@ await (await import("./readiness.mjs")).readinessTests(test);
 await (await import("./shared-start.mjs")).sharedStartTests(test);
 await (await import("./player-view.mjs")).playerViewTests(test);
 await (await import("./cookies.mjs")).cookiesTests(test);
+await (await import("./storage.mjs")).storageTests(test);
 console.log(`\n${passed} tests passed.`);

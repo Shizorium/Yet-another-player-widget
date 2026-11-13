@@ -1,6 +1,6 @@
 {
-  "version": "1.9.0",
-  "buildId": "d671f318b07f6db5b716",
+  "version": "1.10.0",
+  "buildId": "21b71c09bf651a352316",
   "platform": "win32",
   "arch": "x64",
   "files": [
@@ -31,8 +31,14 @@
     {
       "path": "helper/server.mjs",
       "asset": "helper_server.mjs.gz",
-      "sha256": "7ec40b2d341e15a634c85d76c392b57923d34e3fca6bb63876ebc2ee45d8a586",
-      "bytes": 24264
+      "sha256": "71f6ff81ac49498d138452d6a09ed5fc6d50272ce8fbff4353f9a9fcf2efa782",
+      "bytes": 27480
+    },
+    {
+      "path": "helper/storage.mjs",
+      "asset": "helper_storage.mjs.gz",
+      "sha256": "0fe4b31b8ad5cd2b8f23e8eef560fa3336d5505b0429bede813ab93cfce4a362",
+      "bytes": 21823
     },
     {
       "path": "scripts/model.js",
@@ -83,7 +89,7 @@
       "bytes": 17
     }
   ],
-  "executableSha256": "c383c58df1bad6fa63d3ac847c540a3aee5a65030d80ca526e3cc5febda3865a",
+  "executableSha256": "8a92dc5b94351ac36773f9fc58873ac9fe964e192ccf499799f01df1ea041d3f",
   "imports": [
     "CRYPT32.dll",
     "WS2_32.dll",

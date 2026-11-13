@@ -1,6 +1,7 @@
 import { ID, ROOT, STATUS, clamp, time, escapeHTML as e, audioPath, youtubeSource, clone } from "./model.js";
 import { Library, uploadFile, readDuration } from "./library.js";
 import { Downloads } from "./downloads.js";
+import { Storage } from "./storage.js";
 import { miniView, fullView, currentPlaylistView, volumeView, icon } from "./view.js";
 import { TrackDrag } from "./drag.js";
 import { TrackPreview } from "./preview.js";
@@ -12,6 +13,8 @@ function report(error) { console.error(`${ID} |`, error); ui.notifications.error
 export class PlayerWidget {
   constructor() {
     this.library = new Library(); this.downloads = new Downloads(this.library, () => this.schedule());
+    this.storage = new Storage(this.library, this.downloads);
+    this.downloads.storage = this.storage;
     this.audioSync = new PlaybackSync(this.library, () => this.schedule());
     this.preview = new TrackPreview(() => this.schedule(), muted => this.audioSync.setPreviewMuted(muted));
     this.selected = null; this.tab = "library"; this.query = ""; this.full = null; this.dialog = null; this.lastSignature = ""; this.uploadFiles = new Map(); this.uploadControllers = new Map();
@@ -339,14 +342,14 @@ export class PlayerWidget {
     this.closePlaylistMenu(); this.closeVolume();
     const menu = document.createElement("div"); menu.className = "yapw yapw-playlist-menu";
     menu.setAttribute("role", "menu"); menu.setAttribute("aria-label", "Действия с плейлистом"); menu.dataset.playlist = playlistId;
-    menu.innerHTML = `<button type="button" role="menuitem" class="yapw-danger" data-action="remove-playlist">${icon("trash")} Удалить</button>`;
+    menu.innerHTML = `<button type="button" role="menuitem" data-action="storage-playlist">${icon("hard-drive")} Хранилище плейлиста</button><button type="button" role="menuitem" class="yapw-danger" data-action="remove-playlist">${icon("trash")} Удалить</button>`;
     this.bind(menu); this.playlistMenu = menu; this.menuPlaylistId = playlistId; document.body.append(menu);
     const rect = menu.getBoundingClientRect();
     menu.style.left = `${clamp(x, 8, Math.max(8, innerWidth - rect.width - 8))}px`;
     menu.style.top = `${clamp(y, 8, Math.max(8, innerHeight - rect.height - 8))}px`;
     menu.addEventListener("keydown", event => {
       if (event.key === "Escape" || event.key === "Tab") { event.preventDefault(); event.stopPropagation(); this.closePlaylistMenu(true); }
-      else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); menu.querySelector("button").focus(); }
+      else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); const buttons = [...menu.querySelectorAll("button")], index = buttons.indexOf(document.activeElement); buttons[event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length].focus(); }
     });
     menu.querySelector("button").focus();
   }
@@ -461,6 +464,27 @@ export class PlayerWidget {
       ui.notifications.info("Cookies YouTube сохранены в помощнике. Повторите неудачные загрузки.");
     }, "Сохранить cookies");
   }
+  async storageDialog(playlist = null) {
+    const status = await this.storage.status(playlist), name = game.playlists.get(playlist)?.name;
+    const pending = status.job && !status.job.finished;
+    const dialog = await this.form(playlist ? "Хранилище плейлиста" : "Хранилище всей музыки", `<p class="yapw-help">${playlist ? `Плейлист: <strong>${e(name)}</strong>. Его файлы можно хранить отдельно от остальной музыки.` : "Выбранное место будет общим для всех плейлистов этого мира. Отдельные настройки плейлистов сбросятся."}</p><p class="yapw-help">Сейчас: <code class="yapw-cookie-path">${e(status.directory)}</code>${playlist && !status.override ? "<br>Используется общее хранилище." : ""}</p><label>Место хранения<select name="mode"><option value="custom" ${status.override || !playlist && status.root ? "selected" : ""}>Папка на компьютере сервера Foundry</option><option value="default" ${!status.override && (playlist || !status.root) ? "selected" : ""}>${playlist ? "Общее хранилище музыки" : "Стандартная папка Foundry Data / yapw-media"}</option></select></label><label data-storage-folder>Полный путь к папке<input name="root" value="${e((playlist ? status.playlistRoot : status.root) || "")}" placeholder="D:\\FoundryMusic" autocomplete="off"><span class="yapw-help">Можно указать другой диск. Помощник создаст в этой папке каталог YetAnotherPlayerWidget для музыки.</span></label><p class="yapw-help">Переносит уже добавленные аудиофайлы и обложки; новые загрузки и файлы с компьютера будут сохраняться туда же. Укажите путь на компьютере, где запущены Foundry и помощник. Диск должен оставаться подключённым и доступным для записи. Файлы из других папок Foundry копируются с сохранением оригиналов. Внешние интернет-ссылки остаются прежними.</p><p class="yapw-help">При первом переносе текущая композиция может ненадолго перезагрузиться с сохранением позиции. Дальнейшие смены диска сохраняют ссылки на треки.</p>${pending ? '<p class="yapw-help">Предыдущий перенос ещё не применён. Нажмите «Завершить перенос», чтобы сохранить готовые файлы в плейлистах.</p>' : ""}<div class="yapw-storage-progress" role="status" aria-live="polite" hidden><progress max="1" value="0"></progress><p></p></div>`, async (data, form) => {
+      const mode = data.get("mode"), root = mode === "custom" ? String(data.get("root")).trim() : null;
+      if (!pending && mode === "custom" && !root) throw new Error("Укажите полный путь к папке на компьютере сервера Foundry.");
+      await this.uploadChain;
+      form.querySelectorAll("[data-cancel], select, input").forEach(el => el.disabled = true);
+      const progress = form.querySelector(".yapw-storage-progress"); progress.hidden = false;
+      try {
+        const result = await this.storage.change(playlist, root, job => {
+          progress.querySelector("progress").max = Math.max(1, job.total); progress.querySelector("progress").value = job.done;
+          progress.querySelector("p").textContent = job.status === "queued" ? "Ожидание завершения текущей загрузки…" : `Обработано ${job.done} из ${job.total}. Скопировано: ${job.results.length}. Внешних ссылок: ${job.skipped}.`;
+        }, Boolean(pending));
+        ui.notifications.info(`Хранилище сохранено. Обработано треков: ${result.job?.results.length ?? 0}.${result.job?.warnings?.length ? " Часть старых файлов сохранена: " + result.job.warnings[0] : ""}`);
+      } finally { form.querySelectorAll("[data-cancel], select, input").forEach(el => el.disabled = false); }
+    }, pending ? "Завершить перенос" : "Перенести и сохранить");
+    const mode = dialog.querySelector('[name="mode"]'), folder = dialog.querySelector("[data-storage-folder]");
+    const update = () => { folder.hidden = mode.value !== "custom"; }; mode.addEventListener("change", update); update();
+    return dialog;
+  }
   async settings() {
     const layout = game.settings.get(ID,"layout"), helper = game.settings.get(ID,"helper");
     const transparency = game.settings.get(ID,"miniTransparency");
@@ -499,7 +523,7 @@ export class PlayerWidget {
       for (const source of youtube) youtubeSource(source);
       if (path) audioPath(path);
       if (youtube.length) await this.library.addYoutubeBatch(playlistId,youtube,name);
-      if (path) { await this.library.addFile(playlistId,path,name,await readDuration(path)); }
+      if (path) { const added = await this.library.addFile(playlistId,path,name,await readDuration(path)); await this.storage.place(playlistId,added.id); }
       // Uploads continue outside the dialog and appear immediately in the download queue.
       const uploads = files.map(file => ({ id:foundry.utils.randomID(), file }));
       if (uploads.length) {
@@ -572,7 +596,9 @@ export class PlayerWidget {
         const exists = await this.library.updateTrack(id, t => { if (!["cancelled", "cancelling"].includes(t.status) && !controller.signal.aborted) { allowed = true; Object.assign(t,{status:"uploading",error:"",queueDismissed:false}); } });
         if (!exists) { this.uploadFiles.delete(id); return; }
         if (!allowed || controller.signal.aborted) return;
-        const path = await uploadFile(file, controller.signal), duration = await readDuration(path, controller.signal);
+        const currentPlaylist = this.library.playlists.find(p => this.library.tracks(p).some(t => t.id === id))?.id ?? playlistId;
+        const target = await this.storage.uploadTarget(currentPlaylist, id);
+        const path = await uploadFile(file, controller.signal, target), duration = await readDuration(path, controller.signal);
         await this.library.updateTrack(id, t => { if (!controller.signal.aborted && !["cancelled", "cancelling"].includes(t.status)) Object.assign(t,{status:"ready",path,duration,progress:100}); });
         if (controller.signal.aborted) return;
         this.uploadFiles.delete(id);
@@ -581,6 +607,10 @@ export class PlayerWidget {
       } finally { if (this.uploadControllers.get(id) === controller) this.uploadControllers.delete(id); this.schedule(); }
     });
     return this.uploadChain;
+  }
+  async moveTrack(source, track, destination, before = null) {
+    await this.library.transferTrack(source, track, destination, before);
+    if (source !== destination) await this.storage.place(destination, track);
   }
   async cancelDownloads(playlistId = null, trackId = null) {
     const targets = await this.library.cancelDownloads(playlistId, trackId);
@@ -597,6 +627,8 @@ export class PlayerWidget {
     if (action === "library") { this.openFull(); return; }
     if (action === "close") { this.closeFull(); return; }
     if (action === "settings") return this.settings();
+    if (action === "storage-all") return this.storageDialog();
+    if (action === "storage-playlist") return this.storageDialog(pid);
     if (action === "volume") {
       if (this.volumePopup && this.volumePinned) this.closeVolume();
       else { this.volumePinned = true; this.openVolume(element); }
@@ -677,7 +709,7 @@ export class PlayerWidget {
           const {youtubeTrack} = await import("./model.js"); updated = {...youtubeTrack(data.get("source"),name,foundry.utils.randomID()),customName:true};
         }
         await this.library.edit(pid, tracks=>{ tracks[tracks.findIndex(t=>t.id===tid)] = updated; });
-        if (dest !== pid) await this.library.transferTrack(pid,updated.id,dest);
+        if (dest !== pid) await this.moveTrack(pid,updated.id,dest);
         void this.downloads.tick();
       });
     }
@@ -713,6 +745,7 @@ Hooks.once("init", () => {
   game.settings.register(ID,"layout",{scope:"client",config:false,type:Object,default:{version:3,left:85,top:110,width:460,height:78,scale:1}});
   game.settings.register(ID,"libraryLayout",{scope:"client",config:false,type:Object,default:{width:640,height:420}});
   game.settings.register(ID,"helper",{scope:"client",config:false,type:Object,default:{url:"http://127.0.0.1:32123",token:""}});
+  game.settings.register(ID,"storageEnabled",{scope:"world",config:false,type:Boolean,default:false});
   game.settings.register(ID,"selection",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
   game.settings.register(ID,"layerVolumes",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});
   game.settings.register(ID,"layerPlayback",{scope:"world",config:false,type:Object,default:{},onChange:()=>player?.schedule()});

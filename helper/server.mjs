@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { youtubeSource, youtubeCookies, MAX_COOKIES_BYTES, ID } from "../scripts/model.js";
+import { MediaStorage } from "./storage.mjs";
 
 const moduleDir = path.resolve(process.env.YAPW_MODULE_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 export const defaultStateDir = process.env.YAPW_STATE_DIR || path.join(os.tmpdir(), `yapw-${crypto.createHash("sha256").update(moduleDir).digest("hex").slice(0, 12)}`);
@@ -26,10 +27,15 @@ export class Downloader {
     this.running = false;
     this.stopped = false;
     this.persistQueue = Promise.resolve();
+    const storageModule = options.moduleDir ?? moduleDir;
+    const configFile = options.storageConfig ?? (options.stateDir || process.env.YAPW_STATE_DIR ? path.join(this.stateDir, "storage.json") : path.join(path.dirname(defaultCookiesFile), `storage-${crypto.createHash("sha256").update(storageModule).digest("hex").slice(0,12)}.json`));
+    this.storage = new MediaStorage({ moduleDir: storageModule, stateDir: this.stateDir, configFile,
+      idle: async () => { while (this.running) await new Promise(resolve => setTimeout(resolve, 50)); }, changed: () => { if (!this.stopped) void this.pump(); } });
   }
   async init() {
     await fs.mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     await fs.mkdir(this.mediaDir, { recursive: true });
+    await this.storage.init();
     for (const name of await fs.readdir(this.stateDir)) if (/^cookies-session-[a-f0-9]{24}\.txt$/.test(name)) await fs.rm(path.join(this.stateDir, name), { force: true });
     try { this.jobs = JSON.parse(await fs.readFile(path.join(this.stateDir, "jobs.json"), "utf8")); }
     catch (error) { if (error.code !== "ENOENT") throw new Error(`Не удалось прочитать очередь: ${error.message}`); }
@@ -97,11 +103,12 @@ export class Downloader {
     if (!/^[\w-]{1,100}$/.test(data.world ?? "") || !/^[\w:-]{1,180}$/.test(data.key ?? "")) throw new Error("Некорректный идентификатор задания.");
     if (!["resolve", "download"].includes(data.kind)) throw new Error("Неизвестный тип задания.");
     if (data.kind === "download" && source.playlist) throw new Error("Сначала прочитайте содержимое плейлиста.");
+    this.storage.validate(data.world, data.playlist);
     let job = this.jobs.find(j => j.world === data.world && j.key === data.key);
     if (job) {
-      if (data.retry && ["error", "cancelled"].includes(job.status)) { Object.assign(job, { kind: data.kind, url: source.url, status: "queued", error: "", progress: 0, result: null }); await this.persist(); }
+      if (data.retry && ["error", "cancelled"].includes(job.status)) { Object.assign(job, { kind: data.kind, playlist: data.playlist ?? job.playlist, url: source.url, status: "queued", error: "", progress: 0, result: null }); await this.persist(); }
     } else {
-      job = { id: crypto.randomBytes(12).toString("hex"), key: data.key, world: data.world, url: source.url, kind: data.kind, status: "queued", progress: 0, error: "", result: null, createdAt: Date.now() };
+      job = { id: crypto.randomBytes(12).toString("hex"), key: data.key, world: data.world, playlist: data.playlist, url: source.url, kind: data.kind, status: "queued", progress: 0, error: "", result: null, createdAt: Date.now() };
       this.jobs.push(job);
       await this.persist();
     }
@@ -164,29 +171,50 @@ export class Downloader {
       child.on("close", code => { if (pending) onLine?.(pending); finish(code === 0 ? null : new Error(stderr.trim().slice(-2400) || `Загрузчик завершился с кодом ${code}.`)); });
     });
   }
-  async cachedResult(job) {
+  trackLocation(job, legacy = false) {
+    const source = youtubeSource(job.url);
+    if (!legacy && job.world && this.storage.world(job.world).enabled) {
+      const track = job.key.match(/^track:([\w-]{1,100})$/)?.[1] ?? job.key.match(/^[\w-]+:([\w-]{1,100})$/)?.[1] ?? job.id;
+      const location = this.storage.location(job.world, job.playlist, track);
+      return { dir: location.anchor, prefix: location.prefix, location, track };
+    }
+    return { dir: path.join(this.mediaDir, source.videoId), prefix: `${publicPrefix}/${source.videoId}` };
+  }
+  async cachedResult(job, legacy = false) {
     if (job.kind !== "download") return null;
     const source = youtubeSource(job.url);
     if (!source.videoId) return null;
-    const dir = path.join(this.mediaDir, source.videoId);
+    const { dir, prefix } = this.trackLocation(job, legacy);
     try {
       const [audio, text] = await Promise.all([fs.stat(path.join(dir, "track.mp3")), fs.readFile(path.join(dir, "track.info.json"), "utf8")]);
       if (!audio.isFile() || !audio.size) return null;
       const info = JSON.parse(text);
       if (info.id && info.id !== source.videoId) return null;
-      const audioPath = `${publicPrefix}/${source.videoId}/track.mp3`;
+      const audioPath = `${prefix}/track.mp3`;
       let complete = this.jobs.some(j => j.status === "ready" && j.result?.path === audioPath);
       if (!complete) {
         try { const marker = JSON.parse(await fs.readFile(path.join(dir, "track.complete.json"), "utf8")); complete = marker.id === source.videoId && marker.size === audio.size; } catch {}
       }
       if (!complete) return null;
-      const cover = existsSync(path.join(dir, "track.jpg")) ? `${publicPrefix}/${source.videoId}/track.jpg` : "";
+      const cover = existsSync(path.join(dir, "track.jpg")) ? `${prefix}/track.jpg` : "";
       return { name: String(info.title || source.videoId), duration: Number.isFinite(info.duration) ? info.duration : null, path: audioPath, cover, warning: cover ? "" : "YouTube не предоставил превью." };
     } catch (error) { if (["ENOENT", "ENOTDIR"].includes(error.code) || error instanceof SyntaxError) return null; throw error; }
   }
   async run(job) {
     const cached = await this.cachedResult(job);
     if (cached) return cached;
+    if (job.kind === "download" && job.world && this.storage.world(job.world).enabled) {
+      const legacy = await this.cachedResult(job, true);
+      if (legacy) {
+        const { location, track, dir } = this.trackLocation(job);
+        await this.storage.ensure(location, job.world, track);
+        const source = path.join(this.mediaDir, youtubeSource(job.url).videoId);
+        for (const name of ["track.mp3", "track.jpg", "track.info.json", "track.complete.json"]) {
+          try { await fs.copyFile(path.join(source, name), path.join(dir, name)); } catch (error) { if (error.code !== "ENOENT") throw error; }
+        }
+        const result = await this.cachedResult(job); if (result) return result;
+      }
+    }
     const cookiesFile = await this.cookieSnapshot();
     try { return await this.runDownload(job, cookiesFile); }
     finally { if (cookiesFile) await fs.rm(cookiesFile, { force: true }); }
@@ -212,7 +240,8 @@ export class Downloader {
     return this.downloadTrack(job, common, Boolean(cookiesFile));
   }
   async downloadTrack(job, common, privateDownload) {
-    const source = youtubeSource(job.url), dir = path.join(this.mediaDir, source.videoId);
+    const source = youtubeSource(job.url), { dir, prefix, location, track } = this.trackLocation(job);
+    if (location) await this.storage.ensure(location, job.world, track);
     await fs.mkdir(dir, { recursive: true });
     const work = privateDownload ? await fs.mkdtemp(path.join(this.stateDir, "cookies-download-")) : dir;
     try {
@@ -236,8 +265,8 @@ export class Downloader {
       await fs.writeFile(path.join(dir, "track.info.json"), JSON.stringify(info));
       const audioStat = await fs.stat(path.join(dir, "track.mp3"));
       await fs.writeFile(path.join(dir, "track.complete.json"), JSON.stringify({ id: source.videoId, size: audioStat.size, completedAt: Date.now() }));
-      const cover = files.includes("track.jpg") ? `${publicPrefix}/${source.videoId}/track.jpg` : "";
-      return { name: info.title, duration: info.duration, path: `${publicPrefix}/${source.videoId}/track.mp3`, cover, warning: cover ? "" : "YouTube не предоставил превью." };
+      const cover = files.includes("track.jpg") ? `${prefix}/track.jpg` : "";
+      return { name: info.title, duration: info.duration, path: `${prefix}/track.mp3`, cover, warning: cover ? "" : "YouTube не предоставил превью." };
     } finally {
       if (privateDownload) {
         if (path.dirname(path.resolve(work)) !== path.resolve(this.stateDir) || !/^cookies-download-[a-zA-Z0-9]{6}$/.test(path.basename(work))) throw new Error("Неожиданный путь временной загрузки.");
@@ -246,11 +275,11 @@ export class Downloader {
     }
   }
   async pump() {
-    if (this.running || this.stopped) return;
+    if (this.running || this.stopped || this.storage.busy) return;
     this.running = true;
     try {
       let job;
-      while (!this.stopped && (job = this.jobs.find(j => j.status === "queued"))) {
+      while (!this.stopped && !this.storage.busy && (job = this.jobs.find(j => j.status === "queued"))) {
         this.currentJob = job;
         try { const result = await this.run(job); if (job.status !== "cancelled") Object.assign(job, { result, status: "ready", progress: 100, error: "" }); }
         catch (error) { if (job.status !== "cancelled") { job.status = "error"; job.error = /confirm your age|age.restricted|Use --cookies/i.test(error.message) ? "YouTube требует входа или подтверждения возраста. Во вкладке «Загрузки» добавьте cookies.txt аккаунта, которому доступно это видео, затем повторите загрузку." : /429|Too Many Requests|Sign in to confirm.*not a bot/i.test(error.message) ? "YouTube временно ограничил запросы или требует проверку на бота. Подождите и повторите позже; при требовании входа можно добавить cookies.txt во вкладке «Загрузки». Уже скачанные треки берутся из локального хранилища." : error.message; } }
@@ -260,7 +289,7 @@ export class Downloader {
     } catch (error) { console.error("Ошибка сохранения очереди:", error.message); }
     finally { this.running = false; }
   }
-  async close() { this.stopped = true; await this.killChildTree(); await this.persistQueue; await this.cookieWrites.catch(() => {}); }
+  async close() { this.stopped = true; await this.killChildTree(); await this.storage.close(); await this.persistQueue; await this.cookieWrites.catch(() => {}); }
 }
 
 export async function createHelper(options = {}) {
@@ -282,15 +311,25 @@ export async function createHelper(options = {}) {
     if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) return reply(401, { error: "Неверный ключ помощника. Скопируйте ключ из окна запуска." });
     try {
       const url = new URL(req.url, "http://localhost");
-      if (req.method === "GET" && url.pathname === "/health") return reply(200, { ok: true, version: "1.4.0", features: ["cancel", "cache", "standalone", "cookies"], cookies: await downloader.cookiesStatus() });
+      if (req.method === "GET" && url.pathname === "/health") return reply(200, { ok: true, version: "1.5.0", features: ["cancel", "cache", "standalone", "cookies", "storage"], cookies: await downloader.cookiesStatus() });
+      if (req.method === "GET" && url.pathname === "/storage") return reply(200, downloader.storage.status(url.searchParams.get("world"), url.searchParams.get("playlist")));
       if (req.method === "GET" && url.pathname === "/cookies") return reply(200, await downloader.cookiesStatus());
       if (req.method === "GET" && url.pathname === "/jobs") return reply(200, { jobs: downloader.jobs.filter(j => j.world === url.searchParams.get("world")), cookies: await downloader.cookiesStatus() });
-      if (req.method === "POST" && ["/jobs", "/jobs/cancel", "/cookies"].includes(url.pathname)) {
+      if (req.method === "POST" && ["/jobs", "/jobs/cancel", "/cookies", "/storage/move", "/storage/finish", "/storage/prepare"].includes(url.pathname)) {
         let body = "";
-        const limit = url.pathname === "/cookies" ? MAX_COOKIES_BYTES * 2 : 32 * 1024;
+        const limit = url.pathname.startsWith("/storage/") ? 8 * 1024 * 1024 : url.pathname === "/cookies" ? MAX_COOKIES_BYTES * 2 : 32 * 1024;
         for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > limit) return reply(413, { error: "Слишком большой запрос." }); }
         let data;
         try { data = JSON.parse(body); } catch { throw new Error("Некорректный JSON-запрос."); }
+        if (url.pathname === "/storage/prepare") return reply(200, await downloader.storage.prepare(data.world, data.playlist, data.track));
+        if (url.pathname === "/storage/move") return reply(200, await downloader.storage.start(data));
+        if (url.pathname === "/storage/finish") {
+          const result = await downloader.storage.finish(data);
+          for (const moved of result.job.results) for (const job of downloader.jobs) if (job.world === data.world && (job.key === `track:${moved.id}` || job.key?.endsWith(`:${moved.id}`))) {
+            if (job.result?.path === moved.oldPath) Object.assign(job.result, { path: moved.path, cover: moved.cover });
+          }
+          await downloader.persist(); return reply(200, result);
+        }
         if (url.pathname === "/cookies") {
           if (data?.clear !== true && typeof data?.text !== "string") throw new Error("Выберите файл cookies.txt.");
           return reply(200, await downloader.saveCookies(data.clear === true ? null : data.text));

@@ -24,7 +24,7 @@ await fs.mkdir(path.join(build,"assets"),{recursive:true});
 const files = [
   [node,"node.exe"], [path.join(helper,"bin","yt-dlp.exe"),"yt-dlp.exe"],
   [path.resolve(ffmpeg),"ffmpeg.exe"], [path.resolve(ffprobe),"ffprobe.exe"],
-  [path.join(helper,"server.mjs"),"helper/server.mjs"], [path.join(moduleDir,"scripts","model.js"),"scripts/model.js"]
+  [path.join(helper,"server.mjs"),"helper/server.mjs"], [path.join(helper,"storage.mjs"),"helper/storage.mjs"], [path.join(moduleDir,"scripts","model.js"),"scripts/model.js"]
 ];
 for (const name of (await fs.readdir(path.join(helper,"licenses"))).sort()) files.push([path.join(helper,"licenses",name),`licenses/${name}`]);
 const assets = {}, records = [];

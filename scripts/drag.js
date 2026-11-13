@@ -54,7 +54,7 @@ export class TrackDrag {
     const target = this.active && element ? this.target({target:element,clientY:event.clientY}) : null;
     this.finish();
     if (payload && target && game.user.isGM) void this.widget.perform(async () => {
-      await this.widget.library.transferTrack(payload.playlistId,payload.trackId,target.playlistId,target.beforeId);
+      await this.widget.moveTrack(payload.playlistId,payload.trackId,target.playlistId,target.beforeId);
       this.widget.schedule();
     });
   }
@@ -111,7 +111,7 @@ export class TrackDrag {
     this.finish();
     if (payload.module !== ID || payload.world !== game.world.id || typeof payload.trackId !== "string" || typeof payload.playlistId !== "string") return;
     void this.widget.perform(async () => {
-      await this.widget.library.transferTrack(payload.playlistId, payload.trackId, target.playlistId, target.beforeId);
+      await this.widget.moveTrack(payload.playlistId, payload.trackId, target.playlistId, target.beforeId);
       this.widget.schedule();
     });
   }

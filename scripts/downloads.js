@@ -3,20 +3,20 @@ import { ID, youtubeTrack, youtubeCookies, MAX_COOKIES_BYTES, clone, isDownloadA
 export class Downloads {
   constructor(library, changed) { this.library = library; this.changed = changed; this.online = false; this.message = "Помощник не подключён"; this.busy = false; this.cookies = null; }
   get config() { return game.settings.get(ID, "helper"); }
-  async request(endpoint, body) {
+  async request(endpoint, body, timeout = 15000) {
     const { url, token } = this.config;
     if (!url || !token) throw new Error("Откройте настройки плеера и подключите помощник загрузок.");
     let base;
     try { base = new URL(url); } catch { throw new Error("Некорректный адрес помощника."); }
     if (!["http:", "https:"].includes(base.protocol) || base.username || base.password) throw new Error("Используйте HTTP(S)-адрес помощника.");
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 15000);
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeout);
     try {
       const response = await fetch(`${url.replace(/\/$/, "")}${endpoint}`, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: controller.signal, credentials: "omit", cache: "no-store" });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `Ошибка помощника: ${response.status}`);
       return result;
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("Помощник не ответил за 15 секунд.");
+      if (error.name === "AbortError") throw new Error(`Помощник не ответил за ${timeout / 1000} секунд. Проверьте, что он запущен, и повторите действие.`);
       if (error instanceof TypeError) throw new Error("Нет связи с помощником. Запустите Start-Helper.cmd и проверьте адрес, ключ и разрешение браузера на локальную сеть.");
       throw error;
     } finally { clearTimeout(timer); }
@@ -91,8 +91,9 @@ export class Downloads {
   }
   async tick() {
     // Only one GM submits and applies jobs, including when multiple GM clients are connected.
-    if (!game.user.isGM || game.users.activeGM?.id !== game.user.id || this.busy) return;
+    if (!game.user.isGM || game.users.activeGM?.id !== game.user.id || this.busy || this.storageBusy) return;
     this.busy = true;
+    const relocated = [];
     try {
       if (!this.config.token) return;
       const world = game.world.id;
@@ -111,11 +112,12 @@ export class Downloads {
           const latest = this.library.playlists.map(p => (p.getFlag(ID, "tracks") ?? []).find(t => t.id === track.id)).find(Boolean);
           if (!latest || (!isDownloadActive(latest) && !(recovered && latest.status === "error")) || latest.cancelRequested || latest.downloadGeneration !== track.downloadGeneration) continue;
           let job = existing;
-          if (!job) job = await this.request("/jobs", { world, key: `track:${track.id}`, kind: track.kind === "playlist" ? "resolve" : "download", url: track.source, retry: Boolean(track.retry) });
+          if (!job) job = await this.request("/jobs", { world, playlist: p.id, key: `track:${track.id}`, kind: track.kind === "playlist" ? "resolve" : "download", url: track.source, retry: Boolean(track.retry) });
           const patch = { jobId: job.id, status: job.status, progress: Math.round(job.progress || 0), error: job.error || "", retry: false };
           if (job.status === "ready") {
             if (track.kind === "playlist") patch.entries = job.result.entries;
             else Object.assign(patch, job.result, { name: track.customName ? track.name : job.result.name || track.name, status: "ready" });
+            if (track.kind !== "playlist" && job.playlist !== p.id) relocated.push({ playlist: p.id, track: track.id });
           }
           if (patch.entries || Object.entries(patch).some(([key, value]) => track[key] !== value)) patches.set(track.id, { generation: track.downloadGeneration, patch });
         }
@@ -139,5 +141,9 @@ export class Downloads {
       }
     } catch (error) { this.online = false; this.message = error.message; }
     finally { this.busy = false; this.changed(); }
+    if (!this.storageBusy) for (const item of relocated) {
+      try { await this.storage?.place(item.playlist, item.track); }
+      catch (error) { this.message = `Трек загружен, но его перенос не завершён: ${error.message}`; this.changed(); }
+    }
   }
 }

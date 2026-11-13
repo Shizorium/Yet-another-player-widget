@@ -59,7 +59,7 @@ export class Library {
       return result;
     });
   }
-  async _sync(p, tracks) {
+  async _sync(p, tracks, preservePlayback = false) {
     const ready = tracks.filter(t => t.status === "ready" && t.path);
     const creates = ready.filter(t => !p.sounds.has(t.id)).map(t => ({ _id: t.id, name: t.name, path: t.path, volume: 0.8, channel: "music", sort: tracks.indexOf(t) * 1000,
       flags: { [ID]: { trackId: t.id, cover: t.cover ?? "", duration: t.duration } } }));
@@ -69,7 +69,11 @@ export class Library {
       const update = { _id: t.id };
       if (s.sort !== sort) update.sort = sort;
       if (s.name !== t.name) update.name = t.name;
-      if (s.path !== t.path) Object.assign(update, { path: t.path, playing: false, pausedTime: null });
+      if (s.path !== t.path) {
+        const position = [s.sound?.element?.currentTime, s.sound?.currentTime, s.getFlag(ID,"clock")?.offset, s.pausedTime].find(value => Number.isFinite(value) && value >= 0) ?? 0;
+        Object.assign(update, { path: t.path, playing: preservePlayback ? s.playing : false, pausedTime: preservePlayback ? (s.playing ? position : s.pausedTime) : null });
+        if (preservePlayback) stampPlayback(s, update);
+      }
       if (s.getFlag(ID, "cover") !== (t.cover ?? "")) update[`flags.${ID}.cover`] = t.cover ?? "";
       if (s.getFlag(ID, "duration") !== (t.duration ?? null)) update[`flags.${ID}.duration`] = t.duration ?? null;
       return Object.keys(update).length > 1 ? [update] : [];
@@ -79,6 +83,21 @@ export class Library {
     if (deleted.length) await p.deleteEmbeddedDocuments("PlaylistSound", deleted);
   }
   reconcile() { return this.write(async () => { for (const p of this.playlists) await this._sync(p, this.tracks(p)); }); }
+  applyStorage(results) {
+    return this.write(async () => {
+      for (const p of this.playlists) {
+        const tracks = this.tracks(p); let changed = false;
+        for (const result of results) {
+          const track = tracks.find(t => t.id === result.id && [result.oldPath, result.path].includes(t.path));
+          if (!track) continue;
+          track.path = audioPath(result.path);
+          if (track.cover === result.oldCover) track.cover = result.cover;
+          changed = true;
+        }
+        if (changed) { await p.setFlag(ID, "tracks", tracks); await this._sync(p, tracks, true); }
+      }
+    });
+  }
   addYoutube(playlistId, source, name = "") {
     return this.addYoutubeBatch(playlistId, [source], name).then(tracks => tracks[0]);
   }
@@ -101,7 +120,8 @@ export class Library {
   addFile(playlistId, path, name = "", duration = null) {
     path = audioPath(path);
     return this.edit(playlistId, tracks => {
-      tracks.push({ id: foundry.utils.randomID(), kind: "track", type: "file", name: name || decodeURIComponent(path.split("/").pop()).replace(/\.[^.]+$/, ""), path, source: path, status: "ready", duration, cover: "", progress: 100 });
+      const track = { id: foundry.utils.randomID(), kind: "track", type: "file", name: name || decodeURIComponent(path.split("/").pop()).replace(/\.[^.]+$/, ""), path, source: path, status: "ready", duration, cover: "", progress: 100 };
+      tracks.push(track); return track;
     });
   }
   async removeTrack(playlistId, id) {
@@ -505,11 +525,11 @@ export class Library {
   }
 }
 
-export async function uploadFile(file, signal) {
+export async function uploadFile(file, signal, target = null) {
   const picker = foundry.applications.apps.FilePicker;
-  const path = `${ROOT}/storage/uploads`;
+  const path = target ?? `${ROOT}/storage/uploads`;
   // The module ships with this directory; unique names prevent replacing existing tracks.
-  const safeName = `${foundry.utils.randomID()}-${file.name.replace(/[^\p{L}\p{N}._-]/gu, "_")}`;
+  const safeName = target ? `audio-${foundry.utils.randomID()}.${file.name.split(".").pop().replace(/[^a-z0-9]/gi, "")}` : `${foundry.utils.randomID()}-${file.name.replace(/[^\p{L}\p{N}._-]/gu, "_")}`;
   const upload = new File([file], safeName, { type: file.type });
   const endpoint = (picker.implementation ?? picker).uploadURL;
   let result;

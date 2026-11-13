@@ -69,6 +69,23 @@ if(params.has('cookies')){
   };
   w.downloads.cookies={...status};w.downloads.online=true;w.downloads.message='Помощник подключён';w.tab='queue';
 }
+if(params.has('storage')){
+  const w=window.testWidget;store.helper.token='preview';let root=null,override=null,job=null;
+  const status=playlist=>({enabled:true,root,override:Boolean(playlist&&override),playlistRoot:playlist&&override||root,defaultDirectory:'H:\\FoundryVTT\\Data\\yapw-media',directory:(playlist&&override||root)?`${playlist&&override||root}\\YetAnotherPlayerWidget\\preview`:'H:\\FoundryVTT\\Data\\yapw-media\\preview',job});
+  w.downloads.request=async(endpoint,body)=>{
+    if(endpoint==='/storage/move'){
+      if(body.playlist)override=body.root;else {root=body.root;override=null;}
+      job={id:'storage-preview',world:'preview',playlist:body.playlist,status:'queued',total:body.tracks.length,done:0,skipped:0,errors:[],results:[],finished:false};
+      const tracks=body.tracks;setTimeout(()=>{job.status='ready';job.done=job.total;job.results=tracks.map(t=>({id:t.id,oldPath:t.path,oldCover:t.cover,path:`yapw-media/preview/${t.id}/audio.mp3`,cover:t.cover}));},1600);return status(body.playlist);
+    }
+    if(endpoint==='/storage/finish'){job.finished=true;return status(null);}
+    if(endpoint.startsWith('/storage?'))return status(new URL('http://preview'+endpoint).searchParams.get('playlist'));
+    if(endpoint==='/storage/prepare')return {prefix:`yapw-media/preview/${body.track}`};
+    if(endpoint==='/health')return {ok:true,features:['storage']};
+    return {jobs:[]};
+  };
+  w.downloads.online=true;w.downloads.message='Помощник подключён';
+}
 await window.testWidget.library.reconcile();
 const native=playlist('Музыка Foundry — пример',[]);await native.setFlag(ID,'managed',false);
 await native.createEmbeddedDocuments('PlaylistSound',[{_id:'nativeForest',name:'Лесной ветер',path:'music/native-forest.ogg',sort:1000,flags:{[ID]:{duration:180}}},{_id:'nativeRain',name:'Тихий дождь',path:'music/native-rain.ogg',sort:2000,flags:{[ID]:{duration:240}}}]);
